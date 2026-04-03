@@ -1,0 +1,25 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Only this email can write — anyone can read
+    function isOwner() {
+      return request.auth != null
+          && request.auth.token.email == 'david@prismism.com';
+    }
+
+    match /use_cases/{docId} {
+      allow read: if true;
+      allow write: if isOwner();
+    }
+
+    match /meta/{docId} {
+      allow read: if true;
+      allow write: if isOwner();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

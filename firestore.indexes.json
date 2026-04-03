@@ -1,0 +1,29 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "use_cases",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "category",  "order": "ASCENDING" },
+        { "fieldPath": "tweetDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "use_cases",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "category",  "order": "ASCENDING" },
+        { "fieldPath": "confidence", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "use_cases",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "tweetDate",  "order": "DESCENDING" },
+        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Firebase service account keys (never commit these)
+*.json.key
+serviceAccountKey*.json
+service-account*.json
+*-firebase-adminsdk-*.json
+
+# Firebase emulator state
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# Scheduled task credentials
+scheduled/.env
+scheduled/service_account.json
+scheduled/*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo

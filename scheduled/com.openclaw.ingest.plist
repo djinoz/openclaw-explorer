@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.openclaw.ingest</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Update this path to wherever you cloned the repo -->
+    <string>/Users/YOURUSERNAME/projects/openclaw-explorer/scheduled/.venv/bin/python3</string>
+    <string>/Users/YOURUSERNAME/projects/openclaw-explorer/scheduled/ingest.py</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- All secrets live here, NOT in the script -->
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key>
+    <string>/Users/YOURUSERNAME/projects/openclaw-explorer/scheduled/service_account.json</string>
+    <key>FIRESTORE_PROJECT_ID</key>
+    <string>openclaw-explorer</string>
+    <!-- Set ANTHROPIC_API_KEY and SEARCH_API_KEY here or in scheduled/.env -->
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>8</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOURUSERNAME/projects/openclaw-explorer/scheduled/logs/ingest.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOURUSERNAME/projects/openclaw-explorer/scheduled/logs/ingest.stderr.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

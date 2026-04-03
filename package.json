@@ -1,0 +1,26 @@
+{
+  "name": "openclaw-explorer",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && firebase deploy",
+    "seed": "node scripts/seed-firestore.js"
+  },
+  "dependencies": {
+    "firebase": "^12.8.0",
+    "lucide-react": "^0.563.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.2",
+    "@tailwindcss/vite": "^4.1.18",
+    "firebase-admin": "^13.4.0",
+    "tailwindcss": "^4.1.18",
+    "vite": "^7.3.1"
+  }
+}
