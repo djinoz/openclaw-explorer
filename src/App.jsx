@@ -5,6 +5,7 @@ import {
 } from 'firebase/firestore'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
 import { db, auth, provider } from './firebase.js'
+import { csvEscape, safeUrl } from './security.js'
 import {
   Search, Download, Upload, BarChart2, Bot,
   ChevronRight, X, LogIn, LogOut, Pencil, Trash2,
@@ -56,14 +57,6 @@ function matchRecord(rec, tokens, mode) {
     }
   }
   return mode === 'or' ? tokens.some(check) : tokens.every(check)
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-function csvEscape(v) {
-  const s = String(v ?? '')
-  return s.includes(',') || s.includes('"') || s.includes('\n')
-    ? `"${s.replace(/"/g, '""')}"` : s
 }
 
 function downloadCsv(records) {
@@ -127,6 +120,7 @@ export default function App() {
   const [importOpen, setImportOpen] = useState(false)
   const [selIds,     setSelIds]     = useState(new Set())
   const [toast,      setToast]      = useState(null)
+  const canWrite = user?.email === 'david@prismism.com'
 
   useEffect(() => onAuthStateChanged(auth, setUser), [])
 
@@ -195,7 +189,7 @@ export default function App() {
   }
 
   async function batchDelete() {
-    if (!user || selIds.size === 0) return
+    if (!canWrite || selIds.size === 0) return
     if (!confirm(`Delete ${selIds.size} record${selIds.size > 1 ? 's' : ''}? This cannot be undone.`)) return
     const batch = writeBatch(db)
     selIds.forEach(id => batch.delete(doc(db, 'use_cases', id)))
@@ -206,7 +200,7 @@ export default function App() {
   }
 
   async function saveRecord(data) {
-    if (!user) return
+    if (!canWrite) return
     const { id, seqId, createdAt, ...payload } = data
     payload.updatedAt = serverTimestamp()
     if (id) {
@@ -221,7 +215,7 @@ export default function App() {
   }
 
   async function deleteRecord(id) {
-    if (!user || !confirm('Delete this record?')) return
+    if (!canWrite || !confirm('Delete this record?')) return
     await deleteDoc(doc(db, 'use_cases', id))
     if (selected?.id === id) setSelected(null)
     showToast('Deleted', 'error')
@@ -242,7 +236,7 @@ export default function App() {
         <span className="font-bold text-blue-400 text-sm">🦞 OpenClaw Explorer</span>
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-600">{filtered.length}/{records.length}</span>
-          {selIds.size > 0 && user && (
+          {selIds.size > 0 && canWrite && (
             <button onClick={batchDelete}
               className="flex items-center gap-1 px-2 py-1 rounded bg-red-800 hover:bg-red-700 text-xs font-medium">
               <Trash2 size={12}/> Delete {selIds.size}
@@ -255,7 +249,7 @@ export default function App() {
             </button>
           )}
           <IconBtn onClick={() => setStatsOpen(true)}   title="Stats"><BarChart2 size={14}/></IconBtn>
-          <IconBtn onClick={() => setImportOpen(true)}  title="Import CSV"><Upload size={14}/></IconBtn>
+          {canWrite && <IconBtn onClick={() => setImportOpen(true)}  title="Import CSV"><Upload size={14}/></IconBtn>}
           <IconBtn onClick={() => downloadCsv(filtered)} title="Export CSV"><Download size={14}/></IconBtn>
           <button onClick={() => setTriageOpen(t => !t)}
             className="flex items-center gap-1 px-2 py-1 rounded bg-blue-800 hover:bg-blue-700 text-xs font-medium">
@@ -300,7 +294,7 @@ export default function App() {
             className="text-xs text-gray-600 hover:text-gray-400 text-left">
             Clear filters
           </button>
-          {user && (
+          {canWrite && (
             <button
               onClick={() => { setEditing({ category:'', sourceUser:'', description:'', refUrls:'', tweetDate:'', searchDate:'', notes:'', uncertainty:'medium', novelty:'novel' }); setSelected(null) }}
               className="mt-auto px-2 py-1.5 rounded bg-emerald-900 hover:bg-emerald-800 text-xs text-center font-medium">
@@ -404,7 +398,7 @@ export default function App() {
                 onClose={() => setSelected(null)}
                 onToggleSel={() => toggleSelId(selected.id)}
                 isSelected={selIds.has(selected.id)}
-                user={user}/>
+                canWrite={canWrite}/>
             )}
             {editing && (
               <EditPanel key={editing.id ?? 'new'} record={editing}
@@ -426,7 +420,7 @@ export default function App() {
 
       {statsOpen  && <StatsModal  records={records} onClose={() => setStatsOpen(false)}/>}
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={async rows => {
-        if (!user) { showToast('Sign in to import', 'error'); return }
+        if (!canWrite) { showToast('Sign in as owner to import', 'error'); return }
         const batch = writeBatch(db)
         rows.forEach(r => batch.set(doc(collection(db, 'use_cases')), {
           ...r, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
@@ -483,7 +477,7 @@ function FilterSelect({ label, value, onChange, options }) {
 
 // ── Detail Panel ───────────────────────────────────────────────────────────
 
-function DetailPanel({ record: r, onEdit, onDelete, onClose, onToggleSel, isSelected, user }) {
+function DetailPanel({ record: r, onEdit, onDelete, onClose, onToggleSel, isSelected, canWrite }) {
   const urls = (r.refUrls ?? '').split(',').map(u => u.trim()).filter(Boolean)
   return (
     <div className="w-96 shrink-0 border-l border-gray-800 overflow-y-auto bg-gray-900 p-4">
@@ -493,8 +487,8 @@ function DetailPanel({ record: r, onEdit, onDelete, onClose, onToggleSel, isSele
           <IconBtn onClick={onToggleSel} title="Toggle triage scope">
             <CheckCircle size={13} className={isSelected ? 'text-blue-400' : ''}/>
           </IconBtn>
-          {user && <IconBtn onClick={onEdit}><Pencil size={13}/></IconBtn>}
-          {user && (
+          {canWrite && <IconBtn onClick={onEdit}><Pencil size={13}/></IconBtn>}
+          {canWrite && (
             <IconBtn onClick={() => onDelete(r.id)}>
               <Trash2 size={13} className="text-red-500"/>
             </IconBtn>
@@ -524,10 +518,15 @@ function DetailPanel({ record: r, onEdit, onDelete, onClose, onToggleSel, isSele
         <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-500 text-[10px]">found: {r.searchDate || '?'}</span>
       </div>
 
-      {urls.map(u => (
-        <a key={u} href={u} target="_blank" rel="noopener noreferrer"
-          className="block text-blue-400 hover:text-blue-300 text-xs truncate mb-1">{u}</a>
-      ))}
+      {urls.map(u => {
+        const href = safeUrl(u)
+        return href ? (
+          <a key={u} href={href} target="_blank" rel="noopener noreferrer"
+            className="block text-blue-400 hover:text-blue-300 text-xs truncate mb-1">{u}</a>
+        ) : (
+          <span key={u} className="block text-gray-500 text-xs truncate mb-1">{u}</span>
+        )
+      })}
     </div>
   )
 }

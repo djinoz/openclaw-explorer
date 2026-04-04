@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "deploy": "npm run build && firebase deploy",
-    "seed": "node scripts/seed-firestore.js"
+    "seed": "node scripts/seed-firestore.js",
+    "test": "node --test tests/security.test.js && python3 -m unittest discover -s tests -p 'test_*.py'"
   },
   "dependencies": {
     "firebase": "^12.8.0",

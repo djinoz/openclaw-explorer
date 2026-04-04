@@ -5,17 +5,18 @@ service cloud.firestore {
     // Only this email can write — anyone can read
     function isOwner() {
       return request.auth != null
+          && request.auth.token.email_verified == true
           && request.auth.token.email == 'david@prismism.com';
     }
 
     match /use_cases/{docId} {
       allow read: if true;
-      allow write: if isOwner();
+      allow create, update, delete: if isOwner();
     }
 
     match /meta/{docId} {
       allow read: if true;
-      allow write: if isOwner();
+      allow create, update, delete: if isOwner();
     }
 
     match /{document=**} {
