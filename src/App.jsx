@@ -5,11 +5,11 @@ import {
 } from 'firebase/firestore'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
 import { db, auth, provider } from './firebase.js'
-import { csvEscape, safeUrl } from './security.js'
+import { csvEscape, safeUrl, normalizeSuggestionUrl } from './security.js'
 import {
   Search, Download, Upload, BarChart2, Bot,
   ChevronRight, X, LogIn, LogOut, Pencil, Trash2,
-  CheckCircle, Send
+  CheckCircle, Send, PlusCircle, Inbox, Link2, UserRound, Globe, ShieldAlert
 } from 'lucide-react'
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -28,6 +28,7 @@ const novColor = n => {
 const UNC_COLORS = { low: 'text-emerald-400', medium: 'text-amber-400', high: 'text-red-400' }
 const uncColor = u => UNC_COLORS[u] || 'text-gray-400'
 const ALL_FIELDS = ['category','sourceUser','description','refUrls','tweetDate','searchDate','notes','uncertainty','novelty']
+const FUNCTIONS_BASE_URL = `https://us-central1-${import.meta.env.VITE_FIREBASE_PROJECT_ID}.cloudfunctions.net`
 
 // ── Search helpers ─────────────────────────────────────────────────────────
 
@@ -102,6 +103,27 @@ function parseCSV(text) {
   }).filter(r => r.category || r.description)
 }
 
+async function callSuggestionEndpoint(path, body, bearerToken) {
+  const response = await fetch(`${FUNCTIONS_BASE_URL}/${path}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(bearerToken ? { authorization: `Bearer ${bearerToken}` } : {}),
+    },
+    body: JSON.stringify(body),
+  })
+  let data = {}
+  try {
+    data = await response.json()
+  } catch {
+    data = {}
+  }
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.error || response.statusText || 'Request failed')
+  }
+  return data
+}
+
 // ── Main App ───────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -118,8 +140,10 @@ export default function App() {
   const [triageOpen, setTriageOpen] = useState(false)
   const [statsOpen,  setStatsOpen]  = useState(false)
   const [importOpen, setImportOpen] = useState(false)
+  const [suggestionOpen, setSuggestionOpen] = useState(false)
   const [selIds,     setSelIds]     = useState(new Set())
   const [toast,      setToast]      = useState(null)
+  const [suggestions, setSuggestions] = useState([])
   const canWrite = user?.email === 'david@prismism.com'
 
   useEffect(() => onAuthStateChanged(auth, setUser), [])
@@ -137,6 +161,19 @@ export default function App() {
       })
       docs.forEach((d, i) => { d.seqId = i + 1 })
       setRecords(docs)
+    })
+    return unsub
+  }, [])
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'suggestion_queue'), snap => {
+      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      docs.sort((a, b) => {
+        const ca = a.createdAt?.toMillis?.() ?? 0
+        const cb = b.createdAt?.toMillis?.() ?? 0
+        return cb - ca
+      })
+      setSuggestions(docs)
     })
     return unsub
   }, [])
@@ -236,6 +273,10 @@ export default function App() {
         <span className="font-bold text-blue-400 text-sm">🦞 OpenClaw Explorer</span>
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-600">{filtered.length}/{records.length}</span>
+          <button onClick={() => setSuggestionOpen(true)}
+            className="flex items-center gap-1 px-2 py-1 rounded bg-emerald-800 hover:bg-emerald-700 text-xs font-medium">
+            <PlusCircle size={12}/> Suggest URL
+          </button>
           {selIds.size > 0 && canWrite && (
             <button onClick={batchDelete}
               className="flex items-center gap-1 px-2 py-1 rounded bg-red-800 hover:bg-red-700 text-xs font-medium">
@@ -259,7 +300,7 @@ export default function App() {
             ? <IconBtn onClick={signOutUser} title={user.email}><LogOut size={14}/></IconBtn>
             : <button onClick={signIn}
                 className="flex items-center gap-1 px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">
-                <LogIn size={12}/> Sign in
+                <LogIn size={12}/> Login
               </button>
           }
         </div>
@@ -419,6 +460,14 @@ export default function App() {
       </div>
 
       {statsOpen  && <StatsModal  records={records} onClose={() => setStatsOpen(false)}/>}
+      {suggestionOpen && (
+        <SuggestionModal
+          user={user}
+          suggestions={suggestions}
+          onClose={() => setSuggestionOpen(false)}
+          showToast={showToast}
+        />
+      )}
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={async rows => {
         if (!canWrite) { showToast('Sign in as owner to import', 'error'); return }
         const batch = writeBatch(db)
@@ -569,6 +618,227 @@ function EditPanel({ record, onSave, onCancel }) {
           className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-xs">
           Cancel
         </button>
+      </div>
+    </div>
+  )
+}
+
+function SuggestionModal({ user, suggestions, onClose, showToast }) {
+  const [activeTab, setActiveTab] = useState('submit')
+  const [browserId] = useState(() => {
+    const existing = localStorage.getItem('oc_suggestion_browser_id')
+    if (existing) return existing
+    const created = crypto.randomUUID()
+    localStorage.setItem('oc_suggestion_browser_id', created)
+    return created
+  })
+  const [session, setSession] = useState(null)
+  const [sessionRequested, setSessionRequested] = useState(false)
+  const [sessionLoading, setSessionLoading] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [form, setForm] = useState({
+    url: '',
+    displayName: user?.displayName ?? '',
+    creditMode: user ? 'profile' : 'nickname',
+    honeypot: '',
+  })
+  const [openedAt] = useState(() => Date.now())
+
+  useEffect(() => {
+    setForm(f => ({
+      ...f,
+      displayName: user?.displayName ?? f.displayName,
+      creditMode: user ? (f.creditMode === 'anonymous' ? 'nickname' : f.creditMode) : f.creditMode,
+    }))
+  }, [user])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadSession() {
+      if (user || session || sessionLoading || sessionRequested) return
+      setSessionLoading(true)
+      try {
+        const res = await callSuggestionEndpoint('requestSuggestionSessionHttp', { browserId })
+        if (!cancelled) setSession(res)
+      } catch (error) {
+        if (!cancelled) showToast(error?.message || 'Anonymous session unavailable', 'error')
+      } finally {
+        if (!cancelled) {
+          setSessionLoading(false)
+          setSessionRequested(true)
+        }
+      }
+    }
+    loadSession()
+    return () => { cancelled = true }
+  }, [browserId, session, sessionLoading, sessionRequested, showToast, user])
+
+  const queueCount = suggestions.length
+  const publicName = form.creditMode === 'anonymous'
+    ? 'Anonymous'
+    : form.creditMode === 'profile'
+      ? (user?.displayName || 'Contributor')
+      : (form.displayName.trim() || user?.displayName || 'Contributor')
+
+  async function ensureAnonymousSession() {
+    if (user) return true
+    if (session?.sessionId && session?.sessionToken) return session
+    const res = await callSuggestionEndpoint('requestSuggestionSessionHttp', { browserId })
+    setSession(res)
+    return res
+  }
+
+  async function submit() {
+    if (submitting) return
+    const normalizedUrl = normalizeSuggestionUrl(form.url)
+    if (!normalizedUrl) {
+      showToast('Enter a valid http(s) URL', 'error')
+      return
+    }
+    if (form.honeypot.trim()) {
+      showToast('Submission blocked', 'error')
+      return
+    }
+
+    setSubmitting(true)
+    try {
+      const anonymousSession = user ? null : await ensureAnonymousSession()
+      const bearerToken = user ? await user.getIdToken() : null
+      const res = await callSuggestionEndpoint('submitSuggestionHttp', {
+        url: normalizedUrl,
+        displayName: publicName,
+        creditMode: form.creditMode,
+        browserId,
+        sessionId: anonymousSession?.sessionId ?? session?.sessionId ?? null,
+        sessionToken: anonymousSession?.sessionToken ?? session?.sessionToken ?? null,
+        formAgeMs: Date.now() - openedAt,
+        honeypot: form.honeypot,
+      }, bearerToken)
+      showToast('Suggestion added to queue')
+      setForm({
+        url: '',
+        displayName: user?.displayName ?? '',
+        creditMode: user ? 'profile' : 'nickname',
+        honeypot: '',
+      })
+      setActiveTab('queue')
+      setSession(null)
+    } catch (error) {
+      showToast(error?.message ?? 'Submission failed', 'error')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
+      <div
+        className="bg-gray-900 border border-gray-700 rounded-xl p-5 mx-4 max-h-[85vh] overflow-y-auto shadow-2xl max-w-3xl w-full"
+        onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold flex items-center gap-2"><Link2 size={14}/> Suggest a URL</h2>
+          <IconBtn onClick={onClose}><X size={14}/></IconBtn>
+        </div>
+
+        <div className="flex gap-2 mb-4 text-xs">
+          {['submit', 'queue'].map(tab => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-3 py-1.5 rounded font-medium border ${activeTab === tab
+                ? 'bg-blue-700 border-blue-500 text-white'
+                : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'}`}>
+              {tab === 'submit' ? 'Submit' : `Queue (${queueCount})`}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === 'submit' ? (
+          <div className="space-y-3">
+            <p className="text-xs text-gray-400">
+              Share a URL for review. Contributors can sign in for attribution, or submit anonymously with a rate-limited session.
+            </p>
+
+            <FormField label="URL" value={form.url} onChange={v => setForm(f => ({ ...f, url: v }))} />
+
+            <div>
+              <label className="block text-[10px] text-gray-500 uppercase tracking-wide mb-1">Public credit</label>
+              <select
+                value={form.creditMode}
+                onChange={e => setForm(f => ({ ...f, creditMode: e.target.value }))}
+                className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">
+                <option value="profile">Use my account name</option>
+                <option value="nickname">Use a nickname</option>
+                <option value="anonymous">Anonymous</option>
+              </select>
+            </div>
+
+            {form.creditMode === 'nickname' && (
+              <FormField
+                label="Nickname"
+                value={form.displayName}
+                onChange={v => setForm(f => ({ ...f, displayName: v }))}
+              />
+            )}
+
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <ShieldAlert size={13} className="text-amber-400"/>
+              <span>{user ? 'Signed-in submissions are verified by your login.' : sessionLoading ? 'Preparing anonymous session…' : 'Anonymous submissions are session-limited to reduce spam.'}</span>
+            </div>
+
+            <input
+              value={form.honeypot}
+              onChange={e => setForm(f => ({ ...f, honeypot: e.target.value }))}
+              tabIndex={-1}
+              autoComplete="off"
+              aria-hidden="true"
+              className="absolute left-[-9999px] opacity-0 pointer-events-none"
+            />
+
+            <div className="flex gap-2">
+              <button
+                onClick={submit}
+                disabled={submitting}
+                className="flex-1 py-1.5 rounded bg-blue-700 hover:bg-blue-600 text-xs font-medium disabled:opacity-40">
+                {submitting ? 'Submitting…' : 'Submit suggestion'}
+              </button>
+              <button onClick={onClose} className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-xs">
+                Close
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-xs text-gray-400">Public queue, read-only for everyone except the owner.</p>
+            {suggestions.length === 0 ? (
+              <div className="rounded border border-dashed border-gray-700 p-6 text-center text-xs text-gray-500">
+                No suggestions yet.
+              </div>
+            ) : suggestions.map(item => (
+              <div key={item.id} className="rounded border border-gray-800 bg-gray-950/40 p-3 text-xs flex gap-3 items-start">
+                <div className="mt-0.5 text-emerald-400"><Inbox size={14}/></div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium text-gray-200 truncate">{item.displayName || 'Anonymous'}</span>
+                    <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 uppercase text-[10px]">{item.status || 'pending'}</span>
+                    {item.creditMode === 'anonymous' && <span className="text-gray-500">anonymous</span>}
+                  </div>
+                  <a
+                    href={safeUrl(item.url) ?? item.url}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="block mt-1 text-blue-400 hover:text-blue-300 break-all">
+                    {item.url}
+                  </a>
+                  <div className="mt-1 text-[10px] text-gray-500 flex items-center gap-2">
+                    <span>{item.createdAt?.toDate?.()?.toLocaleString?.() ?? 'pending timestamp'}</span>
+                    {item.normalizedUrl && <span className="truncate">{item.normalizedUrl}</span>}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

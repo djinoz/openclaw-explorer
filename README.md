@@ -4,14 +4,15 @@ A React + Firebase web app for browsing, searching, and triaging Claude AI use c
 
 Security notes:
 
-- Public reads are intended; writes are restricted to the verified owner email in Firestore rules.
+- Public reads are intended; writes to converted entries are restricted to the verified owner email in Firestore rules.
 - Service account files and API keys stay local or in Firebase secrets; they are never committed.
 - The browser only receives public data and never needs Firestore admin credentials.
 
 ## Features
 
 - Real-time Firestore sync
-- Google Sign-In (required to add/edit/delete records)
+- Google Sign-In for contributor attribution and owner-only editing
+- Public suggestion queue for URL submissions
 - Sort and filter by category, date, confidence, novelty
 - Full-text client-side search
 - Detail panel with full free-text notes
@@ -46,6 +47,8 @@ Security notes:
 
 5. In **Firestore → Rules**, deploy the rules in `firestore.rules` (or let `firebase deploy` handle it).
 
+6. Deploy the Cloud Functions in `functions/` so the suggestion queue can issue anonymous sessions and accept submissions.
+
 ---
 
 ## Local development
@@ -65,6 +68,8 @@ cp .env.example .env.local
 # 4. Run dev server
 npm run dev
 ```
+
+If you want to exercise the suggestion queue end-to-end locally, run the Firebase emulators for Firestore and Functions in a second terminal.
 
 ---
 

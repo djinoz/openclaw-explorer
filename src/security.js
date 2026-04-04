@@ -15,3 +15,16 @@ export function safeUrl(value) {
     return null
   }
 }
+
+export function normalizeSuggestionUrl(value) {
+  const safe = safeUrl(value)
+  if (!safe) return null
+  try {
+    const url = new URL(safe)
+    url.hash = ''
+    if (url.pathname !== '/') url.pathname = url.pathname.replace(/\/+$/, '')
+    return url.href
+  } catch {
+    return safe
+  }
+}

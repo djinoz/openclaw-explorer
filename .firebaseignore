@@ -1,0 +1,5 @@
+functions/venv/
+functions/__pycache__/
+functions/**/*.pyc
+node_modules/
+dist/

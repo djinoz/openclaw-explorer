@@ -39,8 +39,9 @@ class SecurityHelpersTest(unittest.TestCase):
         self.assertIsNone(normalize_record({'description': 'demo', 'refUrls': 'ftp://bad'}))
 
     def test_functions_ingest_normalizes_urls(self):
-        namespace = load_functions(Path('functions/main.py'), {'safe_url', 'normalize_record'})
+        namespace = load_functions(Path('functions/main.py'), {'safe_url', 'normalize_record', 'normalize_suggestion_url'})
         normalize_record = namespace['normalize_record']
+        normalize_suggestion_url = namespace['normalize_suggestion_url']
 
         cleaned = normalize_record({
             'description': 'demo',
@@ -49,6 +50,12 @@ class SecurityHelpersTest(unittest.TestCase):
             'category': 'Research',
         })
         self.assertEqual(cleaned['refUrls'], 'https://example.com')
+
+        self.assertEqual(
+            normalize_suggestion_url('https://example.com/path/?q=1#frag'),
+            'https://example.com/path?q=1'
+        )
+        self.assertIsNone(normalize_suggestion_url('mailto:test@example.com'))
 
 
 if __name__ == '__main__':
