@@ -2,6 +2,12 @@
 
 A React + Firebase web app for browsing, searching, and triaging Claude AI use cases collected from social media and the web. Use cases are collected daily by an automated scheduled task and stored in Firestore.
 
+Security notes:
+
+- Public reads are intended; writes are restricted to the verified owner email in Firestore rules.
+- Service account files and API keys stay local or in Firebase secrets; they are never committed.
+- The browser only receives public data and never needs Firestore admin credentials.
+
 ## Features
 
 - Real-time Firestore sync
@@ -54,7 +60,7 @@ npm install
 
 # 3. Configure environment
 cp .env.example .env.local
-# Edit .env.local and fill in your Firebase config values
+# Edit .env.local and fill in your Firebase web config values only
 
 # 4. Run dev server
 npm run dev
@@ -77,12 +83,12 @@ The `firebase.json` config points to `dist/` and sets up SPA rewrites so all rou
 
 ## Seeding Firestore with sample data
 
-A seed script is included in `scripts/seed-firestore.js`. It uses the Firebase Admin SDK and requires a service account key.
+A seed script is included in `scripts/seed-firestore.js`. It uses the Firebase Admin SDK and requires a service account key stored locally.
 
 ```bash
 # 1. In Firebase Console → Project settings → Service accounts → Generate new private key
-#    Save the downloaded file as scripts/service_account.json
-#    (this file is in .gitignore — never commit it)
+#    Save the downloaded file as `scripts/service_account.json`
+#    (this file is in `.gitignore` — never commit it)
 
 # 2. Run the seed script
 node scripts/seed-firestore.js
@@ -94,11 +100,13 @@ The script is idempotent: it checks for existing records by `sourceUrl` before i
 
 ## Scheduled ingest task
 
-The daily use-case ingest lives in `scheduled/ingest.py`. It:
+The daily use-case ingest lives in `scheduled/ingest.py`. It now expects JSON records on `stdin` from your scheduler or upstream extraction step, then:
 
-1. Calls a web search / Claude API to discover new Claude use cases
+1. Validates and normalizes the incoming records
 2. Deduplicates against existing Firestore records
 3. Writes new records via the Firestore REST API using a service account
+
+If you want Firebase to run the extraction itself, see `functions/main.py` for the Cloud Scheduler version. That path keeps Anthropic and search keys in Firebase secrets instead of code.
 
 ### Setup
 
@@ -109,7 +117,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Copy your service account key to `scheduled/service_account.json` (git-ignored).
+Copy your service account key to `scheduled/service_account.json` (git-ignored) and keep it off shared machines.
 
 Set these environment variables (e.g. in a `.env` file that is also git-ignored):
 
@@ -117,13 +125,13 @@ Set these environment variables (e.g. in a `.env` file that is also git-ignored)
 |---|---|
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to `service_account.json` |
 | `FIRESTORE_PROJECT_ID` | Your Firebase project ID |
-| `ANTHROPIC_API_KEY` | Claude API key for use-case extraction |
-| `SEARCH_API_KEY` | Web search API key (e.g. Tavily or Serper) |
+| `ANTHROPIC_API_KEY` | Claude API key, if your upstream scheduler does extraction |
+| `SEARCH_API_KEY` | Web search API key, if your upstream scheduler does search |
 
 ### Running manually
 
 ```bash
-python3 ingest.py
+echo '[{"description":"demo","refUrls":"https://example.com"}]' | python3 ingest.py
 ```
 
 ### Scheduling (macOS launchd)
@@ -135,7 +143,7 @@ cp scheduled/com.openclaw.ingest.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.openclaw.ingest.plist
 ```
 
-The plist is configured to run daily at 08:00.
+The plist is configured to run daily at 08:00 and should only reference local files and local secrets.
 
 ### Scheduling (Linux cron)
 
@@ -156,7 +164,8 @@ Collection: `use_cases`
 | `subcategory` | string | Optional subcategory |
 | `description` | string | One-sentence summary |
 | `notes` | string | Free-text notes, links, quotes (multiline) |
-| `sourceUrl` | string | Original tweet / article URL |
+| `refUrls` | string | Comma-separated source URLs |
+| `sourceUrl` | string | Legacy single-URL field used by seed/import scripts |
 | `tweetDate` | string | Date of source (YYYY-MM-DD) |
 | `confidence` | number | 0–10 confidence score |
 | `novelty` | number | 0–10 novelty score |

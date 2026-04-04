@@ -15,7 +15,7 @@
 
   <key>EnvironmentVariables</key>
   <dict>
-    <!-- All secrets live here, NOT in the script -->
+    <!-- All secrets live here, NOT in the script or repo -->
     <key>GOOGLE_APPLICATION_CREDENTIALS</key>
     <string>/Users/YOURUSERNAME/projects/openclaw-explorer/scheduled/service_account.json</string>
     <key>FIRESTORE_PROJECT_ID</key>
