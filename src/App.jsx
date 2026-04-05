@@ -28,7 +28,12 @@ const novColor = n => {
 const UNC_COLORS = { low: 'text-emerald-400', medium: 'text-amber-400', high: 'text-red-400' }
 const uncColor = u => UNC_COLORS[u] || 'text-gray-400'
 const ALL_FIELDS = ['category','sourceUser','description','refUrls','tweetDate','searchDate','notes','uncertainty','novelty']
-const FUNCTIONS_BASE_URL = `https://us-central1-${import.meta.env.VITE_FIREBASE_PROJECT_ID}.cloudfunctions.net`
+const SUGGESTION_SESSION_URL =
+  import.meta.env.VITE_SUGGESTION_SESSION_URL ||
+  'https://requestsuggestionsessionhttp-lqo4ecc5hq-uc.a.run.app'
+const SUBMIT_SUGGESTION_URL =
+  import.meta.env.VITE_SUBMIT_SUGGESTION_URL ||
+  'https://submitsuggestionhttp-lqo4ecc5hq-uc.a.run.app'
 
 // ── Search helpers ─────────────────────────────────────────────────────────
 
@@ -104,13 +109,13 @@ function parseCSV(text) {
 }
 
 async function callSuggestionEndpoint(path, body, bearerToken) {
-  const response = await fetch(`${FUNCTIONS_BASE_URL}/${path}`, {
+  const endpoint = path === 'requestSuggestionSessionHttp'
+    ? SUGGESTION_SESSION_URL
+    : SUBMIT_SUGGESTION_URL
+  const payload = bearerToken ? { ...body, idToken: bearerToken } : body
+  const response = await fetch(endpoint, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...(bearerToken ? { authorization: `Bearer ${bearerToken}` } : {}),
-    },
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   })
   let data = {}
   try {
@@ -145,43 +150,56 @@ export default function App() {
   const [toast,      setToast]      = useState(null)
   const [suggestions, setSuggestions] = useState([])
   const canWrite = user?.email === 'david@prismism.com'
-
-  useEffect(() => onAuthStateChanged(auth, setUser), [])
-
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'use_cases'), snap => {
-      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-      // Assign stable sequential IDs sorted by tweetDate then createdAt
-      docs.sort((a, b) => {
-        const td = (a.tweetDate ?? '').localeCompare(b.tweetDate ?? '')
-        if (td !== 0) return td
-        const ca = a.createdAt?.toMillis?.() ?? 0
-        const cb = b.createdAt?.toMillis?.() ?? 0
-        return ca - cb
-      })
-      docs.forEach((d, i) => { d.seqId = i + 1 })
-      setRecords(docs)
-    })
-    return unsub
-  }, [])
-
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'suggestion_queue'), snap => {
-      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-      docs.sort((a, b) => {
-        const ca = a.createdAt?.toMillis?.() ?? 0
-        const cb = b.createdAt?.toMillis?.() ?? 0
-        return cb - ca
-      })
-      setSuggestions(docs)
-    })
-    return unsub
-  }, [])
-
   const showToast = useCallback((msg, type = 'success') => {
     setToast({ msg, type })
     setTimeout(() => setToast(null), 3000)
   }, [])
+
+  useEffect(() => onAuthStateChanged(auth, setUser), [])
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'use_cases'),
+      snap => {
+        const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+        // Assign stable sequential IDs sorted by tweetDate then createdAt
+        docs.sort((a, b) => {
+          const td = (a.tweetDate ?? '').localeCompare(b.tweetDate ?? '')
+          if (td !== 0) return td
+          const ca = a.createdAt?.toMillis?.() ?? 0
+          const cb = b.createdAt?.toMillis?.() ?? 0
+          return ca - cb
+        })
+        docs.forEach((d, i) => { d.seqId = i + 1 })
+        setRecords(docs)
+      },
+      error => {
+        console.error('use_cases listener failed', error)
+        showToast(`Record load failed: ${error.code || error.message}`, 'error')
+      }
+    )
+    return unsub
+  }, [showToast])
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'suggestion_queue'),
+      snap => {
+        const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+        docs.sort((a, b) => {
+          const ca = a.createdAt?.toMillis?.() ?? 0
+          const cb = b.createdAt?.toMillis?.() ?? 0
+          return cb - ca
+        })
+        setSuggestions(docs)
+      },
+      error => {
+        console.error('suggestion_queue listener failed', error)
+        showToast(`Queue load failed: ${error.code || error.message}`, 'error')
+      }
+    )
+    return unsub
+  }, [showToast])
 
   const categories = useMemo(() => [...new Set(records.map(r => r.category).filter(Boolean))].sort(), [records])
   const novelties  = useMemo(() => [...new Set(records.map(r => r.novelty).filter(Boolean))].sort(), [records])

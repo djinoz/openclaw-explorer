@@ -18,6 +18,8 @@ Environment variables (in .env):
   DRY_RUN                           if "1", print records but don't write
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import json

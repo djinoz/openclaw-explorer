@@ -63,7 +63,14 @@ def json_response(payload: dict, status: int = 200, origin: str | None = None):
 
 def read_request_data(req) -> dict:
     try:
-        return req.get_json(silent=True) or {}
+        data = req.get_json(silent=True)
+        if data is not None:
+            return data or {}
+    except Exception:
+        pass
+    try:
+        raw = req.get_data(as_text=True) or ''
+        return json.loads(raw) if raw.strip() else {}
     except Exception:
         return {}
 
@@ -77,7 +84,8 @@ def read_bearer_token(req) -> str | None:
 
 
 def decode_request_user(req) -> dict | None:
-    token = read_bearer_token(req)
+    data = read_request_data(req)
+    token = data.get('idToken') or read_bearer_token(req)
     if not token:
         return None
     try:
@@ -335,11 +343,11 @@ def session_payload(browser_id: str, token: str) -> dict:
     }
 
 
-@https_fn.on_request()
+@https_fn.on_request(cors=options.CorsOptions(cors_origins='*', cors_methods=['POST', 'OPTIONS']), invoker="public")
 def requestSuggestionSessionHttp(req):
     if req.method == "OPTIONS":
-        return json_response({}, 204, req.headers.get("Origin"))
-    return json_response(requestSuggestionSessionCore(read_request_data(req), None), 200, req.headers.get("Origin"))
+        return ("", 204)
+    return (requestSuggestionSessionCore(read_request_data(req), None), 200)
 
 
 def requestSuggestionSessionCore(data: dict, _auth_claims: dict | None):
@@ -372,11 +380,11 @@ def requestSuggestionSessionCore(data: dict, _auth_claims: dict | None):
         "sessionToken": token,
         "expiresAt": payload["expiresAt"].isoformat(),
     }
-@https_fn.on_request()
+@https_fn.on_request(cors=options.CorsOptions(cors_origins='*', cors_methods=['POST', 'OPTIONS']), invoker="public")
 def submitSuggestionHttp(req):
     if req.method == "OPTIONS":
-        return json_response({}, 204, req.headers.get("Origin"))
-    return json_response(submitSuggestionCore(read_request_data(req), decode_request_user(req)), 200, req.headers.get("Origin"))
+        return ("", 204)
+    return (submitSuggestionCore(read_request_data(req), decode_request_user(req)), 200)
 
 
 def submitSuggestionCore(data: dict, auth_claims: dict | None):
