@@ -45,6 +45,18 @@ ALLOWED_FIELDS = {
     "confidence",
 }
 
+# Map snake_case variants to canonical camelCase field names.
+FIELD_ALIASES: dict[str, str] = {
+    "reference_urls": "refUrls",
+    "ref_urls":       "refUrls",
+    "source_user":    "sourceUser",
+    "source_url":     "sourceUrl",
+    "tweet_date":     "tweetDate",
+    "search_date":    "searchDate",
+}
+
+MAX_RECORDS_PER_BATCH = 100
+
 SUGGESTION_CREDIT_MODES = {"profile", "nickname", "anonymous"}
 
 
@@ -169,15 +181,26 @@ def run(anthropic_key: str, search_key: str) -> dict:
     logger.info(f"Claude extracted {len(candidates)} candidates")
 
     # 3. Deduplicate against Firestore and write
+    if len(candidates) > MAX_RECORDS_PER_BATCH:
+        logger.error(
+            f"Candidate batch too large ({len(candidates)}); "
+            f"capped at {MAX_RECORDS_PER_BATCH} to prevent bulk writes."
+        )
+        candidates = candidates[:MAX_RECORDS_PER_BATCH]
+
     inserted = skipped = invalid = 0
     for rec in candidates:
         if inserted >= MAX_RECORDS:
             break
-        clean = normalize_record(rec)
+        clean = normalize_record(apply_field_aliases(rec))
         if not clean or not clean.get("description"):
             invalid += 1
             continue
         url = clean.get("refUrls", "").strip()
+        if not url:
+            logger.warning(f"  SKIP (no refUrls)  {clean.get('description','')[:60]}")
+            invalid += 1
+            continue
         # Check for existing record with same URL
         existing = col.where("refUrls", "==", url).limit(1).get()
         if len(list(existing)) > 0:
@@ -255,6 +278,11 @@ def extract_use_cases(results: list[dict], api_key: str) -> list[dict]:
 
 def safe_url(value: str) -> bool:
     return value.startswith(("http://", "https://"))
+
+
+def apply_field_aliases(record: dict) -> dict:
+    """Remap snake_case keys to their canonical camelCase names."""
+    return {FIELD_ALIASES.get(k, k): v for k, v in record.items()}
 
 
 def normalize_record(record: dict) -> dict | None:

@@ -52,6 +52,20 @@ ALLOWED_FIELDS = {
     "sourceUrl", "subcategory", "confidence", "tags",
 }
 
+# Map snake_case variants (from external JSON sources) to canonical camelCase.
+FIELD_ALIASES: dict[str, str] = {
+    "reference_urls": "refUrls",
+    "ref_urls":       "refUrls",
+    "source_user":    "sourceUser",
+    "source_url":     "sourceUrl",
+    "tweet_date":     "tweetDate",
+    "search_date":    "searchDate",
+}
+
+# Hard cap on records per ingest run — prevents a malicious or oversized
+# payload from bulk-writing the collection.
+MAX_BATCH = 100
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
@@ -71,6 +85,11 @@ def headers(token):
 
 def safe_url(value: str) -> bool:
     return value.startswith(("http://", "https://"))
+
+
+def apply_field_aliases(record: dict) -> dict:
+    """Remap any snake_case keys to their canonical camelCase names."""
+    return {FIELD_ALIASES.get(k, k): v for k, v in record.items()}
 
 
 def normalize_record(record: dict) -> dict | None:
@@ -151,11 +170,22 @@ def main():
         log.error(f"Invalid JSON: {e}")
         sys.exit(1)
 
+    if not isinstance(records, list):
+        log.error("Input must be a JSON array of records")
+        sys.exit(1)
+
+    if len(records) > MAX_BATCH:
+        log.error(
+            f"Batch too large: {len(records)} records exceeds MAX_BATCH={MAX_BATCH}. "
+            "Aborting to prevent bulk writes. Split into smaller batches."
+        )
+        sys.exit(1)
+
     log.info(f"Received {len(records)} candidate records")
 
     if DRY_RUN:
         for r in records:
-            print(json.dumps(r, indent=2))
+            print(json.dumps(apply_field_aliases(r), indent=2))
         log.info("DRY RUN — nothing written")
         return
 
@@ -163,15 +193,25 @@ def main():
     inserted = skipped = invalid = 0
 
     for rec in records:
-        clean = normalize_record(rec)
+        # Normalise field names first (handles snake_case input from external sources)
+        clean = normalize_record(apply_field_aliases(rec))
         if not clean or not clean.get("description"):
             invalid += 1
             continue
+
         url = clean.get("refUrls", "").strip()
+        if not url:
+            # A missing or empty refUrls means dedup cannot work — reject outright
+            # rather than letting the record bypass the duplicate check.
+            log.warning(f"  SKIP (no refUrls)  {clean.get('description','')[:60]}")
+            invalid += 1
+            continue
+
         if url_exists(token, url):
             log.info(f"  DUP  {clean.get('description','')[:60]}")
             skipped += 1
             continue
+
         doc_id = write_record(token, clean)
         log.info(f"  NEW  {clean.get('description','')[:60]}  → {doc_id}")
         inserted += 1
