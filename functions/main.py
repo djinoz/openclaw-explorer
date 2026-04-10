@@ -60,6 +60,30 @@ MAX_RECORDS_PER_BATCH = 100
 SUGGESTION_CREDIT_MODES = {"profile", "nickname", "anonymous"}
 
 
+def _extract_text(html: str) -> str:
+    """Strip HTML tags and return plain text, skipping script/style blocks."""
+    from html.parser import HTMLParser
+    class _Parser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self._skip = False
+            self.chunks: list[str] = []
+        def handle_starttag(self, tag, attrs):
+            if tag in ("script", "style", "nav", "header", "footer", "noscript"):
+                self._skip = True
+        def handle_endtag(self, tag):
+            if tag in ("script", "style", "nav", "header", "footer", "noscript"):
+                self._skip = False
+        def handle_data(self, data):
+            if not self._skip:
+                stripped = data.strip()
+                if stripped:
+                    self.chunks.append(stripped)
+    p = _Parser()
+    p.feed(html[:100_000])
+    return " ".join(p.chunks)
+
+
 def cors_headers(origin: str | None = None) -> dict[str, str]:
     return {
         "Access-Control-Allow-Origin": origin or "*",
@@ -369,6 +393,64 @@ def session_payload(browser_id: str, token: str) -> dict:
         "expiresAt": now + timedelta(minutes=30),
         "usedAt": None,
     }
+
+
+@https_fn.on_request(
+    cors=options.CorsOptions(cors_origins='*', cors_methods=['POST', 'OPTIONS']),
+    invoker="public",
+    secrets=["ANTHROPIC_API_KEY"],
+    timeout_sec=60,
+    memory=options.MemoryOption.MB_256,
+)
+def claudeProxy(req):
+    """CORS-safe proxy for Anthropic API calls from the browser. Owner-only."""
+    import os
+    if req.method == "OPTIONS":
+        return ("", 204)
+
+    # Verify caller is the owner
+    token = read_bearer_token(req)
+    if not token:
+        return json_response({"error": "Unauthorized"}, 401)
+    try:
+        claims = fb_auth.verify_id_token(token)
+    except Exception:
+        return json_response({"error": "Invalid token"}, 401)
+    if claims.get("email") != "david@prismism.com" or not claims.get("email_verified"):
+        return json_response({"error": "Forbidden"}, 403)
+
+    body = read_request_data(req)
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not anthropic_key:
+        return json_response({"error": "Proxy not configured"}, 503)
+
+    # Optional: fetch a URL server-side and prepend its text to the first user message
+    prefetch_url = body.pop("prefetch_url", None)
+    if prefetch_url and isinstance(prefetch_url, str) and prefetch_url.startswith(("http://", "https://")):
+        try:
+            page = requests.get(
+                prefetch_url, timeout=8,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; OpenClawBot/1.0)"},
+            )
+            page_text = _extract_text(page.text)[:1500]
+            if page_text and body.get("messages"):
+                body["messages"][0]["content"] = (
+                    f"Page content:\n{page_text}\n\n" + body["messages"][0]["content"]
+                )
+        except Exception:
+            pass  # fall through without page content
+
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": anthropic_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json=body,
+        timeout=55,
+    )
+    return (resp.text, resp.status_code, {"Content-Type": "application/json"})
 
 
 @https_fn.on_request(cors=options.CorsOptions(cors_origins='*', cors_methods=['POST', 'OPTIONS']), invoker="public")

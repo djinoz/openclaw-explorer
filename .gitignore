@@ -25,6 +25,7 @@ ui-debug.log
 scheduled/.env
 scheduled/service_account.json
 scheduled/*.json
+scheduled/seen_ids.txt
 
 # Python
 __pycache__/

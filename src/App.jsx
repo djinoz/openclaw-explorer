@@ -34,6 +34,9 @@ const SUGGESTION_SESSION_URL =
 const SUBMIT_SUGGESTION_URL =
   import.meta.env.VITE_SUBMIT_SUGGESTION_URL ||
   'https://submitsuggestionhttp-lqo4ecc5hq-uc.a.run.app'
+const CLAUDE_PROXY_URL =
+  import.meta.env.VITE_CLAUDE_PROXY_URL ||
+  'https://claudeproxy-lqo4ecc5hq-uc.a.run.app'
 
 // ── Search helpers ─────────────────────────────────────────────────────────
 
@@ -256,7 +259,7 @@ export default function App() {
 
   async function saveRecord(data) {
     if (!canWrite) return
-    const { id, seqId, createdAt, ...payload } = data
+    const { id, seqId, createdAt, _approveId, ...payload } = data
     payload.updatedAt = serverTimestamp()
     if (id) {
       await updateDoc(doc(db, 'use_cases', id), payload)
@@ -264,7 +267,10 @@ export default function App() {
     } else {
       payload.createdAt = serverTimestamp()
       await addDoc(collection(db, 'use_cases'), payload)
-      showToast('Created')
+      if (_approveId) {
+        await deleteDoc(doc(db, 'suggestion_queue', _approveId))
+      }
+      showToast(_approveId ? 'Approved and added' : 'Created')
     }
     setEditing(null)
   }
@@ -461,6 +467,7 @@ export default function App() {
             )}
             {editing && (
               <EditPanel key={editing.id ?? 'new'} record={editing}
+                categories={categories}
                 onSave={saveRecord}
                 onCancel={() => setEditing(null)}/>
             )}
@@ -472,7 +479,8 @@ export default function App() {
               records={filtered}
               selIds={selIds}
               onClose={() => setTriageOpen(false)}
-              showToast={showToast}/>
+              showToast={showToast}
+              canWrite={canWrite}/>
           )}
         </div>
       </div>
@@ -481,9 +489,26 @@ export default function App() {
       {suggestionOpen && (
         <SuggestionModal
           user={user}
+          canWrite={canWrite}
           suggestions={suggestions}
           onClose={() => setSuggestionOpen(false)}
           showToast={showToast}
+          onApprove={(item, enriched = {}) => {
+            setSuggestionOpen(false)
+            setEditing({
+              category:    enriched.category    ?? '',
+              sourceUser:  enriched.sourceUser  ?? item.displayName ?? '',
+              description: enriched.description ?? '',
+              refUrls:     item.url             ?? '',
+              tweetDate:   enriched.tweetDate   ?? '',
+              searchDate:  new Date().toISOString().slice(0, 10),
+              notes:       enriched.notes       ?? '',
+              uncertainty: enriched.uncertainty ?? 'medium',
+              novelty:     enriched.novelty     ?? 'novel',
+              _approveId:  item.id,
+            })
+            setSelected(null)
+          }}
         />
       )}
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={async rows => {
@@ -600,7 +625,7 @@ function DetailPanel({ record: r, onEdit, onDelete, onClose, onToggleSel, isSele
 
 // ── Edit Panel ─────────────────────────────────────────────────────────────
 
-function EditPanel({ record, onSave, onCancel }) {
+function EditPanel({ record, onSave, onCancel, categories = [] }) {
   const [form, setForm] = useState({ ...record })
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -611,7 +636,18 @@ function EditPanel({ record, onSave, onCancel }) {
         <IconBtn onClick={onCancel}><X size={13}/></IconBtn>
       </div>
       <div className="space-y-2.5">
-        <FormField label="Category"    value={form.category}    onChange={v => set('category', v)}/>
+        <div>
+          <label className="block text-[10px] text-gray-500 uppercase tracking-wide mb-1">Category</label>
+          <input
+            list="category-options"
+            value={form.category ?? ''}
+            onChange={e => set('category', e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500 text-gray-100"
+          />
+          <datalist id="category-options">
+            {categories.map(c => <option key={c} value={c}/>)}
+          </datalist>
+        </div>
         <FormField label="Source user" value={form.sourceUser}  onChange={v => set('sourceUser', v)}/>
         <FormField label="Description" value={form.description} onChange={v => set('description', v)} multiline rows={3}/>
         <FormField label="Reference URLs (comma-separated)" value={form.refUrls} onChange={v => set('refUrls', v)}/>
@@ -625,7 +661,17 @@ function EditPanel({ record, onSave, onCancel }) {
             <option>low</option><option>medium</option><option>high</option>
           </select>
         </div>
-        <FormField label="Novelty" value={form.novelty} onChange={v => set('novelty', v)}/>
+        <div>
+          <label className="block text-[10px] text-gray-500 uppercase tracking-wide mb-1">Novelty</label>
+          <select value={form.novelty ?? ''} onChange={e => set('novelty', e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">
+            <option value="">— select —</option>
+            <option>highly novel</option>
+            <option>novel</option>
+            <option>possibly novel</option>
+            <option>common</option>
+          </select>
+        </div>
       </div>
       <div className="flex gap-2 mt-4">
         <button onClick={() => onSave(form)}
@@ -641,8 +687,100 @@ function EditPanel({ record, onSave, onCancel }) {
   )
 }
 
-function SuggestionModal({ user, suggestions, onClose, showToast }) {
+async function callClaude(body) {
+  const idToken = await auth.currentUser?.getIdToken()
+  if (!idToken) throw new Error('Not signed in')
+  const res = await fetch(CLAUDE_PROXY_URL, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${idToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error?.message ?? res.statusText)
+  return data
+}
+
+function parseTwitterUrl(url) {
+  try {
+    const u = new URL(url)
+    const host = u.hostname.replace(/^www\./, '')
+    if (!['twitter.com', 'x.com'].includes(host)) return null
+    const parts = u.pathname.split('/').filter(Boolean)
+    // e.g. /username/status/1234567890
+    const username = parts[0] ?? null
+    const tweetId  = parts[1] === 'status' ? parts[2] : null
+    let tweetDate  = null
+    if (tweetId) {
+      // Twitter Snowflake: timestamp_ms = (id >> 22) + 1288834974657
+      const tsMs = Number(BigInt(tweetId) >> BigInt(22)) + 1288834974657
+      tweetDate = new Date(tsMs).toISOString().slice(0, 10)
+    }
+    return { username, tweetDate }
+  } catch {
+    return null
+  }
+}
+
+async function enrichFromUrl(url, existingSourceUser) {
+  const twitter = parseTwitterUrl(url)
+
+  // Programmatic: extract username + date from Twitter URLs without using Claude
+  const programmatic = {}
+  if (twitter?.username) {
+    const handle = `@${twitter.username}`
+    const existing = (existingSourceUser || '').trim()
+    if (!existing) {
+      programmatic.sourceUser = handle
+    } else if (!existing.toLowerCase().includes(twitter.username.toLowerCase())) {
+      programmatic.sourceUser = `${existing}, ${handle}`
+    }
+    if (twitter.tweetDate) programmatic.tweetDate = twitter.tweetDate
+  }
+
+  // For Twitter: fetch tweet text via public oEmbed API (CORS-enabled, no auth needed)
+  let tweetText = null
+  if (twitter) {
+    try {
+      const oembed = await fetch(
+        `https://publish.twitter.com/oembed?url=${encodeURIComponent(url)}&omit_script=true`,
+        { signal: AbortSignal.timeout(8000) }
+      )
+      if (oembed.ok) {
+        const tmp = document.createElement('div')
+        tmp.innerHTML = (await oembed.json()).html ?? ''
+        tweetText = tmp.textContent?.trim() ?? null
+      }
+    } catch { /* fall through */ }
+  }
+
+  // Claude: for Twitter pass tweet text inline; for others use server-side prefetch_url
+  try {
+    const userContent = tweetText
+      ? `Tweet text:\n${tweetText}\n\nURL: ${url}`
+      : `URL: ${url}`
+    const data = await callClaude({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 512,
+      prefetch_url: twitter ? undefined : url,
+      system: `You populate a database of OpenClaw (open-source Claude-based agent) use cases.
+Given a URL and its content, fill in record fields. Return ONLY a raw JSON object — no markdown fences, no commentary.
+Fields: category (string, e.g. "Productivity / Planning"), description (approx 30 words summarising the specific use case shown), novelty ("highly novel"|"novel"|"possibly novel"|"common"), uncertainty ("low"|"medium"|"high"), notes (optional, omit if nothing useful).
+For Twitter/X links you may also return: sourceUser (handle without @), tweetDate (YYYY-MM-DD).`,
+      messages: [{ role: 'user', content: userContent }],
+    })
+    // Strip markdown fences if Claude wraps the JSON anyway
+    const raw = data.content[0].text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+    const claudeResult = JSON.parse(raw)
+    // Programmatic values win over Claude's guesses for sourceUser/tweetDate
+    return { ...claudeResult, ...programmatic }
+  } catch (e) {
+    return { ...programmatic, notes: `Enrichment error: ${String(e.message ?? e).slice(0, 30)}` }
+  }
+}
+
+function SuggestionModal({ user, canWrite, suggestions, onClose, showToast, onApprove }) {
   const [activeTab, setActiveTab] = useState('submit')
+  const [approvingId, setApprovingId] = useState(null)
   const [browserId] = useState(() => {
     const existing = localStorage.getItem('oc_suggestion_browser_id')
     if (existing) return existing
@@ -827,7 +965,9 @@ function SuggestionModal({ user, suggestions, onClose, showToast }) {
           </div>
         ) : (
           <div className="space-y-2">
-            <p className="text-xs text-gray-400">Public queue, read-only for everyone except the owner.</p>
+            <p className="text-xs text-gray-400">
+              {canWrite ? 'Approve to create a record, or reject to remove from queue.' : 'Public queue, read-only for everyone except the owner.'}
+            </p>
             {suggestions.length === 0 ? (
               <div className="rounded border border-dashed border-gray-700 p-6 text-center text-xs text-gray-500">
                 No suggestions yet.
@@ -852,6 +992,35 @@ function SuggestionModal({ user, suggestions, onClose, showToast }) {
                     <span>{item.createdAt?.toDate?.()?.toLocaleString?.() ?? 'pending timestamp'}</span>
                     {item.normalizedUrl && <span className="truncate">{item.normalizedUrl}</span>}
                   </div>
+                  {canWrite && (
+                    <div className="flex gap-2 mt-2">
+                      <button
+                        disabled={approvingId === item.id}
+                        onClick={async () => {
+                          setApprovingId(item.id)
+                          try {
+                            const enriched = await enrichFromUrl(item.url, item.displayName)
+                            onApprove(item, enriched)
+                          } catch {
+                            onApprove(item, {})
+                          } finally {
+                            setApprovingId(null)
+                          }
+                        }}
+                        className="flex items-center gap-1 px-2 py-1 rounded bg-emerald-800 hover:bg-emerald-700 text-emerald-200 text-[11px] font-medium disabled:opacity-50">
+                        <CheckCircle size={11}/> {approvingId === item.id ? 'Enriching…' : 'Approve'}
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (!confirm('Reject and delete this suggestion?')) return
+                          await deleteDoc(doc(db, 'suggestion_queue', item.id))
+                          showToast('Rejected', 'error')
+                        }}
+                        className="flex items-center gap-1 px-2 py-1 rounded bg-gray-700 hover:bg-red-900 text-gray-300 hover:text-red-200 text-[11px] font-medium">
+                        <X size={11}/> Reject
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -877,20 +1046,17 @@ function FormField({ label, value, onChange, multiline, rows = 2 }) {
 
 // ── Triage Panel ───────────────────────────────────────────────────────────
 
-function TriagePanel({ records, selIds, onClose, showToast }) {
+function TriagePanel({ records, selIds, onClose, showToast, canWrite }) {
   const [prompt,  setPrompt]  = useState('')
-  const [apiKey,  setApiKey]  = useState(() => localStorage.getItem('oc_api_key') ?? '')
   const [loading, setLoading] = useState(false)
   const [result,  setResult]  = useState(null)
   const [actions, setActions] = useState([])
-
-  function saveKey(k) { setApiKey(k); localStorage.setItem('oc_api_key', k) }
 
   const scope = selIds.size ? records.filter(r => selIds.has(r.id)) : records
 
   async function submit() {
     if (!prompt.trim() || loading) return
-    if (!apiKey.trim()) { showToast('Enter Anthropic API key', 'error'); return }
+    if (!canWrite) { showToast('Sign in as owner to use Triage', 'error'); return }
     setLoading(true); setResult(null); setActions([])
 
     const recordsText = scope.map(r =>
@@ -906,22 +1072,12 @@ When suggesting changes, respond with plain English then a JSON block in \`\`\`j
 Reference records by their #seqID numbers. Be concise and specific.`
 
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 2048,
-          system,
-          messages: [{ role: 'user', content: `${prompt}\n\n---\nRECORDS (${scope.length}):\n${recordsText}` }]
-        })
+      const data = await callClaude({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 2048,
+        system,
+        messages: [{ role: 'user', content: `${prompt}\n\n---\nRECORDS (${scope.length}):\n${recordsText}` }],
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error?.message || res.statusText)
       const text = data.content[0].text
       const jsonMatch = text.match(/```json\s*([\s\S]*?)```/)
       setResult(text.replace(/```json[\s\S]*?```/g, '').trim())
@@ -941,10 +1097,7 @@ Reference records by their #seqID numbers. Be concise and specific.`
           scope: {selIds.size ? [...selIds].map(i => '#'+i).join(', ') : `all ${scope.length}`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <label className="text-[10px] text-gray-500">API key</label>
-          <input type="password" value={apiKey} onChange={e => saveKey(e.target.value)}
-            placeholder="sk-ant-…"
-            className="w-40 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs focus:outline-none"/>
+          {!canWrite && <span className="text-[10px] text-amber-500">Sign in as owner to use</span>}
           <IconBtn onClick={onClose}><X size={12}/></IconBtn>
         </div>
       </div>
