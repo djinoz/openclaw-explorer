@@ -4,6 +4,9 @@ node_modules/
 # Build output
 dist/
 
+# Generated from firestore.rules.template — do not edit directly
+firestore.rules
+
 # Environment / secrets
 .env
 .env.local
