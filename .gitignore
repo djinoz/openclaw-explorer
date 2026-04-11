@@ -29,6 +29,7 @@ scheduled/.env
 scheduled/service_account.json
 scheduled/*.json
 scheduled/seen_ids.txt
+scheduled/build_ingest_batch.py
 
 # Python
 __pycache__/
