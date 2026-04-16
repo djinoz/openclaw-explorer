@@ -46,8 +46,12 @@ CREDENTIALS_FILE     = os.environ.get(
     "GOOGLE_APPLICATION_CREDENTIALS",
     str(Path(__file__).parent / "service_account.json"),
 )
-MIN_CLUSTER_SIZE     = int(os.environ.get("MIN_CLUSTER_SIZE", "2"))
+MIN_CLUSTER_SIZE      = int(os.environ.get("MIN_CLUSTER_SIZE", "2"))
 MAX_RECORDS_PER_BATCH = int(os.environ.get("MAX_RECORDS_PER_BATCH", "30"))
+CHECKPOINT_FILE       = Path(os.environ.get(
+    "SIMILARITY_CHECKPOINT",
+    str(Path(__file__).parent / "similarity_checkpoint.json"),
+))
 
 FIRESTORE_BASE = (
     f"https://firestore.googleapis.com/v1/projects/{FIRESTORE_PROJECT_ID}"
@@ -204,7 +208,7 @@ def find_similars_in_cluster(client: Anthropic, records: list[dict]) -> list[dic
     records_text = format_for_claude(records)
     log.debug("Sending %d records to Claude", len(records))
     resp = client.messages.create(
-        model="claude-opus-4-6",
+        model="claude-sonnet-4-6",
         max_tokens=2048,
         system=SIMILARITY_SYSTEM,
         messages=[{
@@ -231,11 +235,27 @@ def find_similars_in_cluster(client: Anthropic, records: list[dict]) -> list[dic
         return []
 
 
+# ── Checkpoint (skip already-analysed batches) ────────────────────────────────
+
+def load_checkpoint() -> set[str]:
+    if CHECKPOINT_FILE.exists():
+        return set(json.loads(CHECKPOINT_FILE.read_text()))
+    return set()
+
+
+def save_checkpoint(seen: set[str]) -> None:
+    if not DRY_RUN:
+        CHECKPOINT_FILE.write_text(json.dumps(sorted(seen)))
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
     token  = get_token()
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    seen = load_checkpoint()
+    log.info("Checkpoint: %d previously-analysed record IDs", len(seen))
 
     log.info("Fetching use_cases…")
     records = fetch_collection(token, "use_cases")
@@ -289,7 +309,19 @@ def main():
             log.info("    → split into %d batches of ≤%d", len(batches), MAX_RECORDS_PER_BATCH)
 
         for batch_idx, batch in enumerate(batches):
+            batch_ids = {r["_id"] for r in batch}
+            if batch_ids.issubset(seen):
+                log.info("    batch %d: all %d records already analysed, skipping",
+                         batch_idx + 1, len(batch))
+                continue
+
+            new_count = len(batch_ids - seen)
+            log.info("    batch %d: %d new record(s) in batch", batch_idx + 1, new_count)
+
             proposals = find_similars_in_cluster(client, batch)
+            seen.update(batch_ids)
+            save_checkpoint(seen)
+
             if not proposals:
                 log.info("    batch %d: no groups proposed", batch_idx + 1)
                 continue
