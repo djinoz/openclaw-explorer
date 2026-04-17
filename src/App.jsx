@@ -8,7 +8,7 @@ import { db, auth, provider } from './firebase.js'
 import { csvEscape, safeUrl, normalizeSuggestionUrl } from './security.js'
 import {
   Search, Download, Upload, BarChart2, Bot,
-  ChevronRight, X, LogIn, LogOut, Pencil, Trash2,
+  ChevronRight, ChevronDown, Layers, X, LogIn, LogOut, Pencil, Trash2,
   CheckCircle, Send, PlusCircle, Inbox, Link2, UserRound, Globe, ShieldAlert
 } from 'lucide-react'
 
@@ -152,6 +152,9 @@ export default function App() {
   const [selIds,     setSelIds]     = useState(new Set())
   const [toast,      setToast]      = useState(null)
   const [suggestions, setSuggestions] = useState([])
+  const [groups,     setGroups]     = useState([])
+  const [viewMode,   setViewMode]   = useState('grouped') // 'flat' | 'grouped'
+  const [expandedGroups, setExpandedGroups] = useState(new Set())
   const canWrite = user?.email === 'david@prismism.com'
   const showToast = useCallback((msg, type = 'success') => {
     setToast({ msg, type })
@@ -204,6 +207,18 @@ export default function App() {
     return unsub
   }, [showToast])
 
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'use_case_groups'),
+      snap => setGroups(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+      error => {
+        console.error('use_case_groups listener failed', error)
+        showToast(`Groups load failed: ${error.code || error.message}`, 'error')
+      }
+    )
+    return unsub
+  }, [showToast])
+
   const categories = useMemo(() => [...new Set(records.map(r => r.category).filter(Boolean))].sort(), [records])
   const novelties  = useMemo(() => [...new Set(records.map(r => r.novelty).filter(Boolean))].sort(), [records])
 
@@ -227,6 +242,44 @@ export default function App() {
         : String(bv).localeCompare(String(av))
     })
   }, [records, q, matchMode, filterCat, filterUnc, filterNov, sort])
+
+  // ── Group lookup maps ──────────────────────────────────────────────────────
+
+  // groupByLeadDocId: { firestoreDocId → groupDoc } for lead records
+  const groupByLeadDocId = useMemo(() => {
+    const map = {}
+    groups.forEach(g => { if (g.leadId) map[g.leadId] = g })
+    return map
+  }, [groups])
+
+  // memberToGroup: { firestoreDocId → groupDoc } for member records
+  const memberToGroup = useMemo(() => {
+    const map = {}
+    groups.forEach(g => (g.memberIds ?? []).forEach(mid => { map[mid] = g }))
+    return map
+  }, [groups])
+
+  // displayRows: flattened list of { type: 'flat'|'lead'|'member', record, group? }
+  const displayRows = useMemo(() => {
+    if (viewMode !== 'grouped') return filtered.map(r => ({ type: 'flat', record: r }))
+    const rows = []
+    for (const record of filtered) {
+      if (memberToGroup[record.id]) continue  // will appear under its lead
+      const group = groupByLeadDocId[record.id]
+      if (group) {
+        rows.push({ type: 'lead', record, group })
+        if (expandedGroups.has(group.id)) {
+          for (const memberId of (group.memberIds ?? [])) {
+            const mr = records.find(r => r.id === memberId)
+            if (mr) rows.push({ type: 'member', record: mr, group })
+          }
+        }
+      } else {
+        rows.push({ type: 'flat', record })
+      }
+    }
+    return rows
+  }, [filtered, viewMode, groupByLeadDocId, memberToGroup, expandedGroups, records])
 
   function toggleSort(field) {
     setSort(s => s.field === field
@@ -280,6 +333,107 @@ export default function App() {
     await deleteDoc(doc(db, 'use_cases', id))
     if (selected?.id === id) setSelected(null)
     showToast('Deleted', 'error')
+  }
+
+  function toggleGroupExpand(groupId) {
+    setExpandedGroups(s => { const n = new Set(s); n.has(groupId) ? n.delete(groupId) : n.add(groupId); return n })
+  }
+
+  async function approveGroup(group) {
+    if (!canWrite) return
+    await updateDoc(doc(db, 'use_case_groups', group.id), { status: 'approved', updatedAt: serverTimestamp() })
+    showToast('Group approved')
+  }
+
+  async function rejectGroup(group) {
+    if (!canWrite) return
+    if (!confirm('Reject this grouping? Records will be ungrouped.')) return
+    await deleteDoc(doc(db, 'use_case_groups', group.id))
+    showToast('Grouping rejected', 'error')
+  }
+
+  async function applyTriageAction(action) {
+    if (action.action === 'group' || action.action === 'merge') {
+      const leadSeqId  = action.leadId   ?? action.ids?.[0]
+      const memberSeqs = action.memberIds ?? action.ids?.slice(1) ?? []
+      const leadRec    = records.find(r => r.seqId === leadSeqId)
+      const memberRecs = memberSeqs.map(id => records.find(r => r.seqId === id)).filter(Boolean)
+      if (!leadRec || memberRecs.length === 0) { showToast('Could not resolve records for group', 'error'); return }
+      await addDoc(collection(db, 'use_case_groups'), {
+        leadId:    leadRec.id,
+        memberIds: memberRecs.map(r => r.id),
+        reason:    action.reason ?? '',
+        source:    'triage',
+        status:    'pending',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
+      showToast('Group proposal created (pending)')
+    } else {
+      showToast(`Apply not yet implemented for: ${action.action}`, 'error')
+    }
+  }
+
+  // ── Group membership management ────────────────────────────────────────────
+
+  async function addRecordToGroup(record, groupId) {
+    if (memberToGroup[record.id] || groupByLeadDocId[record.id]) {
+      showToast('Record is already in a group — remove it first', 'error'); return
+    }
+    const group = groups.find(g => g.id === groupId)
+    if (!group) return
+    await updateDoc(doc(db, 'use_case_groups', groupId), {
+      memberIds: [...(group.memberIds ?? []), record.id],
+      updatedAt: serverTimestamp(),
+    })
+    showToast('Added to group')
+  }
+
+  // Promote a member record to lead; old lead becomes a member
+  async function promoteGroupMember(group, memberRecord) {
+    const oldLeadId = group.leadId
+    const newMemberIds = [
+      ...(group.memberIds ?? []).filter(id => id !== memberRecord.id),
+      oldLeadId,
+    ]
+    await updateDoc(doc(db, 'use_case_groups', group.id), {
+      leadId:    memberRecord.id,
+      memberIds: newMemberIds,
+      updatedAt: serverTimestamp(),
+    })
+    showToast(`#${memberRecord.seqId} promoted to lead`)
+  }
+
+  // Remove a member from the group; if last member dissolves the group
+  async function removeMemberFromGroup(group, memberRecord) {
+    const newMemberIds = (group.memberIds ?? []).filter(id => id !== memberRecord.id)
+    if (newMemberIds.length === 0) {
+      if (!confirm('Removing the last member will dissolve the group. Continue?')) return
+      await deleteDoc(doc(db, 'use_case_groups', group.id))
+      showToast('Group dissolved')
+    } else {
+      await updateDoc(doc(db, 'use_case_groups', group.id), {
+        memberIds: newMemberIds, updatedAt: serverTimestamp(),
+      })
+      showToast('Removed from group')
+    }
+  }
+
+  // Remove the lead from the group; promote newLeadId as the new lead.
+  // If newLeadId is falsy (no members) the group is dissolved.
+  async function removeLeadFromGroup(group, newLeadId) {
+    if (!newLeadId) {
+      await deleteDoc(doc(db, 'use_case_groups', group.id))
+      showToast('Group dissolved')
+      return
+    }
+    const newMemberIds = (group.memberIds ?? []).filter(id => id !== newLeadId)
+    await updateDoc(doc(db, 'use_case_groups', group.id), {
+      leadId:    newLeadId,
+      memberIds: newMemberIds,
+      updatedAt: serverTimestamp(),
+    })
+    showToast('Lead removed, new lead promoted')
   }
 
   const signIn = () => signInWithPopup(auth, provider).catch(() => {})
@@ -359,6 +513,17 @@ export default function App() {
             className="text-xs text-gray-600 hover:text-gray-400 text-left">
             Clear filters
           </button>
+          <div>
+            <label className="block text-[10px] text-gray-500 uppercase tracking-wide mb-1">View</label>
+            <div className="flex rounded overflow-hidden border border-gray-700 text-[10px] font-medium">
+              {[['flat','Flat'],['grouped','Grouped']].map(([v,l]) => (
+                <button key={v} onClick={() => setViewMode(v)}
+                  className={`flex-1 px-2 py-1 ${viewMode === v ? 'bg-blue-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+                  {l}
+                </button>
+              ))}
+            </div>
+          </div>
           {canWrite && (
             <button
               onClick={() => { setEditing({ category:'', sourceUser:'', description:'', refUrls:'', tweetDate:'', searchDate:'', notes:'', uncertainty:'medium', novelty:'novel' }); setSelected(null) }}
@@ -419,23 +584,62 @@ export default function App() {
                   {filtered.length === 0 && (
                     <tr><td colSpan={9} className="text-center py-16 text-gray-700">No records</td></tr>
                   )}
-                  {filtered.map(r => (
-                    <tr key={r.id}
+                  {displayRows.map(({ type, record: r, group }) => (
+                    <tr key={`${type}-${r.id}`}
                       onClick={() => { setSelected(r); setEditing(null) }}
-                      className={`border-b border-gray-800/50 cursor-pointer hover:bg-gray-800/30 transition-colors
-                        ${selected?.id === r.id ? 'bg-blue-950/40' : ''}
-                        ${selIds.has(r.id) ? 'bg-blue-950/20' : ''}`}>
+                      onDoubleClick={() => { if (type === 'lead') toggleGroupExpand(group.id) }}
+                      className={[
+                        'border-b border-gray-800/50 cursor-pointer hover:bg-gray-800/30 transition-colors',
+                        selected?.id === r.id ? 'bg-blue-950/40' : '',
+                        selIds.has(r.id) ? 'bg-blue-950/20' : '',
+                        type === 'member' ? 'bg-gray-950/60 opacity-80' : '',
+                      ].join(' ')}>
+
+                      {/* # / expand column */}
                       <td className="pl-2 pr-1 py-1.5 whitespace-nowrap" onClick={e => e.stopPropagation()}>
-                        <div className="flex items-center gap-1">
-                          <input type="checkbox" className="accent-blue-500 cursor-pointer"
-                            checked={selIds.has(r.id)}
-                            onChange={() => toggleSelId(r.id)}/>
-                          <span className="font-mono text-blue-500/70">{r.seqId}</span>
-                        </div>
+                        {type === 'member' ? (
+                          <div className="pl-5 flex items-center">
+                            <span className="font-mono text-blue-500/40">{r.seqId}</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-0.5">
+                            {type === 'lead' ? (
+                              <button onClick={e => { e.stopPropagation(); toggleGroupExpand(group.id) }}
+                                className="text-gray-500 hover:text-amber-400 p-0.5 shrink-0">
+                                {expandedGroups.has(group.id) ? <ChevronDown size={10}/> : <ChevronRight size={10}/>}
+                              </button>
+                            ) : (
+                              <input type="checkbox" className="accent-blue-500 cursor-pointer"
+                                checked={selIds.has(r.id)}
+                                onChange={() => toggleSelId(r.id)}/>
+                            )}
+                            <span className="font-mono text-blue-500/70">{r.seqId}</span>
+                          </div>
+                        )}
                       </td>
+
                       <td className="px-2 py-1.5 text-gray-300 max-w-[144px] truncate">{r.category}</td>
                       <td className="px-2 py-1.5 text-gray-400 max-w-[128px] truncate">{r.sourceUser}</td>
-                      <td className="px-2 py-1.5 text-gray-300 max-w-xs truncate">{r.description}</td>
+
+                      {/* description with group badge */}
+                      <td className="px-2 py-1.5 text-gray-300 max-w-xs truncate">
+                        {type === 'lead' && (
+                          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium mr-1.5 shrink-0
+                            ${group.status === 'pending' ? 'bg-amber-900/60 text-amber-400' : 'bg-blue-900/50 text-blue-400'}`}>
+                            <Layers size={8}/>
+                            {group.memberIds?.length ?? 0}
+                            {group.status === 'pending' ? '?' : ''}
+                          </span>
+                        )}
+                        {type === 'member' && (
+                          <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] mr-1.5 shrink-0
+                            ${group.status === 'pending' ? 'bg-amber-900/30 text-amber-600' : 'bg-gray-800 text-gray-500'}`}>
+                            {group.status === 'pending' ? 'similar?' : 'grouped'}
+                          </span>
+                        )}
+                        {r.description}
+                      </td>
+
                       <td className="px-2 py-1.5 text-gray-600 whitespace-nowrap">{r.tweetDate}</td>
                       <td className={`px-2 py-1.5 font-medium ${uncColor(r.uncertainty)}`}>{r.uncertainty}</td>
                       <td className="px-2 py-1.5">
@@ -443,11 +647,26 @@ export default function App() {
                           {r.novelty}
                         </span>
                       </td>
+
+                      {/* actions */}
                       <td className="pr-1">
-                        <button onClick={e => { e.stopPropagation(); setSelected(r); setEditing(null) }}
-                          className="text-gray-700 hover:text-gray-400 p-0.5">
-                          <ChevronRight size={12}/>
-                        </button>
+                        {type === 'lead' && group.status === 'pending' && canWrite ? (
+                          <div className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
+                            <button onClick={() => approveGroup(group)} title="Approve grouping"
+                              className="text-emerald-700 hover:text-emerald-400 p-0.5">
+                              <CheckCircle size={11}/>
+                            </button>
+                            <button onClick={() => rejectGroup(group)} title="Reject grouping"
+                              className="text-red-900 hover:text-red-500 p-0.5">
+                              <X size={11}/>
+                            </button>
+                          </div>
+                        ) : (
+                          <button onClick={e => { e.stopPropagation(); setSelected(r); setEditing(null) }}
+                            className="text-gray-700 hover:text-gray-400 p-0.5">
+                            <ChevronRight size={12}/>
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -463,7 +682,22 @@ export default function App() {
                 onClose={() => setSelected(null)}
                 onToggleSel={() => toggleSelId(selected.id)}
                 isSelected={selIds.has(selected.id)}
-                canWrite={canWrite}/>
+                canWrite={canWrite}
+                memberGroup={memberToGroup[selected.id] ?? null}
+                leadGroup={groupByLeadDocId[selected.id] ?? null}
+                allRecords={records}
+                groups={groups}
+                onJumpToLead={leadDocId => {
+                  const lead = records.find(r => r.id === leadDocId)
+                  if (!lead) return
+                  const grp = groupByLeadDocId[leadDocId]
+                  if (grp) setExpandedGroups(s => { const n = new Set(s); n.add(grp.id); return n })
+                  setSelected(lead)
+                }}
+                onAddToGroup={groupId => addRecordToGroup(selected, groupId)}
+                onPromoteToLead={group => promoteGroupMember(group, selected)}
+                onRemoveMember={group => removeMemberFromGroup(group, selected)}
+                onRemoveLead={removeLeadFromGroup}/>
             )}
             {editing && (
               <EditPanel key={editing.id ?? 'new'} record={editing}
@@ -477,10 +711,12 @@ export default function App() {
           {triageOpen && (
             <TriagePanel
               records={filtered}
+              allRecords={records}
               selIds={selIds}
               onClose={() => setTriageOpen(false)}
               showToast={showToast}
-              canWrite={canWrite}/>
+              canWrite={canWrite}
+              onApplyAction={applyTriageAction}/>
           )}
         </div>
       </div>
@@ -569,8 +805,32 @@ function FilterSelect({ label, value, onChange, options }) {
 
 // ── Detail Panel ───────────────────────────────────────────────────────────
 
-function DetailPanel({ record: r, onEdit, onDelete, onClose, onToggleSel, isSelected, canWrite }) {
+function DetailPanel({ record: r, onEdit, onDelete, onClose, onToggleSel, isSelected, canWrite,
+                       memberGroup, leadGroup, allRecords, groups,
+                       onJumpToLead, onAddToGroup, onPromoteToLead, onRemoveMember, onRemoveLead }) {
   const urls = (r.refUrls ?? '').split(',').map(u => u.trim()).filter(Boolean)
+
+  // Local state for group management UI
+  const [pickNewLead,  setPickNewLead]  = useState('')   // docId of chosen new lead when removing lead
+  const [pickGroup,    setPickGroup]    = useState('')   // groupId when adding to a group
+  const [showRemoveLead, setShowRemoveLead] = useState(false)
+  const [showAddGroup,   setShowAddGroup]   = useState(false)
+
+  // Records for each member in the lead's group
+  const memberRecords = leadGroup
+    ? (leadGroup.memberIds ?? []).map(id => allRecords?.find(rec => rec.id === id)).filter(Boolean)
+    : []
+
+  // Eligible groups to add this record to (non-rejected, not already containing this record)
+  const eligibleGroups = (groups ?? []).filter(g =>
+    g.status !== 'rejected' &&
+    g.leadId !== r.id &&
+    !(g.memberIds ?? []).includes(r.id)
+  )
+
+  const groupStatusCls = status =>
+    status === 'pending' ? 'bg-amber-900/50 text-amber-400' : 'bg-blue-900/50 text-blue-400'
+
   return (
     <div className="w-96 shrink-0 border-l border-gray-800 overflow-y-auto bg-gray-900 p-4">
       <div className="flex items-center justify-between mb-3">
@@ -619,6 +879,130 @@ function DetailPanel({ record: r, onEdit, onDelete, onClose, onToggleSel, isSele
           <span key={u} className="block text-gray-500 text-xs truncate mb-1">{u}</span>
         )
       })}
+
+      {/* ── Group management section ── */}
+
+      {/* (a) Record is a group MEMBER */}
+      {memberGroup && (
+        <div className="mt-4 pt-3 border-t border-gray-800 space-y-2">
+          <div className="flex items-center gap-1.5 text-[10px] text-gray-500 uppercase tracking-wide">
+            <Layers size={10}/> Group member
+            <span className={`ml-1 px-1.5 py-0.5 rounded font-medium ${groupStatusCls(memberGroup.status)}`}>
+              {memberGroup.status}
+            </span>
+          </div>
+          <p className="text-gray-400 text-xs">{memberGroup.reason}</p>
+          <button onClick={() => onJumpToLead(memberGroup.leadId)}
+            className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300">
+            <ChevronRight size={11}/> Jump to lead record
+          </button>
+          {canWrite && (
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => onPromoteToLead(memberGroup)}
+                className="px-2 py-1 rounded bg-amber-900/50 hover:bg-amber-800/60 text-amber-300 text-[11px] font-medium">
+                Promote to lead
+              </button>
+              <button onClick={() => onRemoveMember(memberGroup)}
+                className="px-2 py-1 rounded bg-gray-700 hover:bg-red-900/50 text-gray-300 hover:text-red-300 text-[11px] font-medium">
+                Remove from group
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* (b/c) Record is a group LEAD */}
+      {leadGroup && (
+        <div className="mt-4 pt-3 border-t border-gray-800 space-y-2">
+          <div className="flex items-center gap-1.5 text-[10px] text-gray-500 uppercase tracking-wide">
+            <Layers size={10}/> Group lead — {memberRecords.length} similar
+            <span className={`ml-1 px-1.5 py-0.5 rounded font-medium ${groupStatusCls(leadGroup.status)}`}>
+              {leadGroup.status}
+            </span>
+          </div>
+          <p className="text-gray-400 text-xs">{leadGroup.reason}</p>
+          {memberRecords.length > 0 && (
+            <p className="text-[11px] text-gray-500">
+              Members: {memberRecords.map(m => `#${m.seqId}`).join(', ')}
+            </p>
+          )}
+          {canWrite && !showRemoveLead && (
+            <button onClick={() => { setShowRemoveLead(true); setPickNewLead(memberRecords[0]?.id ?? '') }}
+              className="px-2 py-1 rounded bg-gray-700 hover:bg-red-900/50 text-gray-300 hover:text-red-300 text-[11px] font-medium">
+              Remove me from this group…
+            </button>
+          )}
+          {canWrite && showRemoveLead && (
+            <div className="space-y-1.5">
+              {memberRecords.length === 0 ? (
+                <p className="text-xs text-gray-500">No members left — removing will dissolve the group.</p>
+              ) : (
+                <>
+                  <label className="block text-[10px] text-gray-500 uppercase tracking-wide">Promote as new lead</label>
+                  <select value={pickNewLead} onChange={e => setPickNewLead(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100">
+                    {memberRecords.map(m => (
+                      <option key={m.id} value={m.id}>#{m.seqId} — {m.description?.slice(0, 50)}</option>
+                    ))}
+                  </select>
+                </>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    if (memberRecords.length === 0) {
+                      if (!confirm('No members remain. Dissolve the group?')) return
+                      // dissolve — handled in removeLeadFromGroup with empty memberIds
+                    }
+                    await onRemoveLead(leadGroup, pickNewLead || memberRecords[0]?.id)
+                    setShowRemoveLead(false)
+                  }}
+                  className="px-2 py-1 rounded bg-red-900/60 hover:bg-red-800/70 text-red-200 text-[11px] font-medium">
+                  {memberRecords.length === 0 ? 'Dissolve group' : 'Confirm'}
+                </button>
+                <button onClick={() => setShowRemoveLead(false)}
+                  className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 text-[11px]">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* (a) Add ungrouped record to an existing group */}
+      {!memberGroup && !leadGroup && canWrite && eligibleGroups.length > 0 && (
+        <div className="mt-4 pt-3 border-t border-gray-800 space-y-1.5">
+          {!showAddGroup ? (
+            <button onClick={() => { setShowAddGroup(true); setPickGroup(eligibleGroups[0]?.id ?? '') }}
+              className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-gray-300">
+              <Layers size={10}/> Add to existing group…
+            </button>
+          ) : (
+            <>
+              <label className="block text-[10px] text-gray-500 uppercase tracking-wide">Add to group</label>
+              <select value={pickGroup} onChange={e => setPickGroup(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100">
+                {eligibleGroups.map(g => {
+                  const lead = allRecords?.find(rec => rec.id === g.leadId)
+                  const label = lead ? `#${lead.seqId} — ${lead.description?.slice(0, 45)}` : g.id
+                  return <option key={g.id} value={g.id}>{label}</option>
+                })}
+              </select>
+              <div className="flex gap-2">
+                <button onClick={async () => { await onAddToGroup(pickGroup); setShowAddGroup(false) }}
+                  className="px-2 py-1 rounded bg-blue-800 hover:bg-blue-700 text-blue-100 text-[11px] font-medium">
+                  Add
+                </button>
+                <button onClick={() => setShowAddGroup(false)}
+                  className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 text-[11px]">
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -1046,11 +1430,12 @@ function FormField({ label, value, onChange, multiline, rows = 2 }) {
 
 // ── Triage Panel ───────────────────────────────────────────────────────────
 
-function TriagePanel({ records, selIds, onClose, showToast, canWrite }) {
-  const [prompt,  setPrompt]  = useState('')
-  const [loading, setLoading] = useState(false)
-  const [result,  setResult]  = useState(null)
-  const [actions, setActions] = useState([])
+function TriagePanel({ records, allRecords, selIds, onClose, showToast, canWrite, onApplyAction }) {
+  const [prompt,   setPrompt]   = useState('')
+  const [loading,  setLoading]  = useState(false)
+  const [result,   setResult]   = useState(null)
+  const [actions,  setActions]  = useState([])
+  const [applying, setApplying] = useState(null)  // index of action being applied
 
   const scope = selIds.size ? records.filter(r => selIds.has(r.id)) : records
 
@@ -1067,8 +1452,13 @@ function TriagePanel({ records, selIds, onClose, showToast, canWrite }) {
     const system = `You are an analyst triaging a research database of OpenClaw (open-source browser-automation agent) use cases.
 Each record: #seqID [Category] SourceUser | TweetDate | unc=X novelty=Y, then DESC/NOTES/URLS.
 When suggesting changes, respond with plain English then a JSON block in \`\`\`json ... \`\`\` with an array of actions:
-  { "action": "merge"|"reclassify"|"flag"|"delete"|"update_field", "ids": [seqId...], "reason": "...",
-    "new_category"?: "...", "field"?: "...", "new_value"?: "...", "flag_reason"?: "..." }
+  { "action": "merge"|"reclassify"|"flag"|"delete"|"update_field"|"group",
+    "ids": [seqId...], "reason": "...",
+    "new_category"?: "...", "field"?: "...", "new_value"?: "...", "flag_reason"?: "...",
+    "leadId"?: seqId, "memberIds"?: [seqId...] }
+Use "group" (preferred) to cluster similar use cases under a lead without deleting — specify leadId and memberIds.
+Use "merge" only when records are true duplicates that should be collapsed.
+IMPORTANT for grouping: be domain-specific. "YouTube pipeline" ≠ "tweet pipeline" ≠ "podcast pipeline".
 Reference records by their #seqID numbers. Be concise and specific.`
 
     try {
@@ -1088,6 +1478,20 @@ Reference records by their #seqID numbers. Be concise and specific.`
     setLoading(false)
   }
 
+  async function handleApply(action, i) {
+    if (applying !== null) return
+    setApplying(i)
+    try {
+      await onApplyAction(action)
+    } catch (e) {
+      showToast(`Apply failed: ${e.message}`, 'error')
+    } finally {
+      setApplying(null)
+    }
+  }
+
+  const actionIsGroupable = a => a.action === 'group' || a.action === 'merge'
+
   return (
     <div className="border-t border-gray-800 bg-gray-900 p-3 shrink-0 max-h-64 overflow-y-auto">
       <div className="flex items-center gap-2 mb-2">
@@ -1104,7 +1508,7 @@ Reference records by their #seqID numbers. Be concise and specific.`
       <div className="flex gap-2">
         <textarea value={prompt} onChange={e => setPrompt(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit() }}
-          placeholder="e.g. find duplicates · reclassify #5 as Finance · flag anything before 2026-01-29…"
+          placeholder="e.g. find similar ideas · group duplicates · reclassify #5 as Finance…"
           rows={2}
           className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs resize-none focus:outline-none"/>
         <button onClick={submit} disabled={loading}
@@ -1122,13 +1526,27 @@ Reference records by their #seqID numbers. Be concise and specific.`
           <p className="text-[10px] text-gray-500 uppercase tracking-wide">Suggested actions</p>
           {actions.map((a, i) => (
             <div key={i} className="flex items-center gap-2 bg-gray-800 rounded px-2 py-1 text-xs">
-              <span className="text-amber-400 font-medium shrink-0">{a.action}</span>
-              <span className="text-blue-400 shrink-0">{(a.ids ?? []).map(id => '#' + id).join(' ')}</span>
+              <span className={`font-medium shrink-0 ${actionIsGroupable(a) ? 'text-amber-300' : 'text-amber-400'}`}>
+                {a.action}
+              </span>
+              {a.leadId && (
+                <span className="text-blue-300 shrink-0">lead #{a.leadId} ← {(a.memberIds ?? []).map(id => '#'+id).join(' ')}</span>
+              )}
+              {!a.leadId && <span className="text-blue-400 shrink-0">{(a.ids ?? []).map(id => '#' + id).join(' ')}</span>}
               {a.new_category && <span className="text-emerald-400">→ {a.new_category}</span>}
               <span className="text-gray-500 flex-1 truncate">{a.reason}</span>
-              <button className="text-emerald-500 hover:text-emerald-300 text-[10px] font-medium shrink-0">
-                Apply
-              </button>
+              {canWrite && (
+                <button
+                  disabled={applying !== null}
+                  onClick={() => handleApply(a, i)}
+                  className={`text-[10px] font-medium shrink-0 px-1.5 py-0.5 rounded
+                    ${actionIsGroupable(a)
+                      ? 'bg-amber-900/50 text-amber-300 hover:bg-amber-800/60'
+                      : 'text-gray-500 hover:text-gray-300'}
+                    disabled:opacity-40`}>
+                  {applying === i ? '…' : 'Apply'}
+                </button>
+              )}
             </div>
           ))}
         </div>
