@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
-  collection, onSnapshot, addDoc, updateDoc, deleteDoc,
+  collection, onSnapshot, getDoc, setDoc, addDoc, updateDoc, deleteDoc,
   doc, serverTimestamp, writeBatch
 } from 'firebase/firestore'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
@@ -11,6 +11,11 @@ import {
   ChevronRight, ChevronDown, Layers, X, LogIn, LogOut, Pencil, Trash2,
   CheckCircle, Send, PlusCircle, Inbox, Link2, UserRound, Globe, ShieldAlert
 } from 'lucide-react'
+
+// ── Build info ─────────────────────────────────────────────────────────────
+
+const APP_VERSION = '1.4'
+const BUILD_TIME = '2026-04-20 23:44 AEST'
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -28,6 +33,25 @@ const novColor = n => {
 const UNC_COLORS = { low: 'text-emerald-400', medium: 'text-amber-400', high: 'text-red-400' }
 const uncColor = u => UNC_COLORS[u] || 'text-gray-400'
 const ALL_FIELDS = ['category','sourceUser','description','refUrls','tweetDate','searchDate','notes','uncertainty','novelty']
+
+const STOP_WORDS = new Set([
+  'a','an','the','and','or','but','in','on','at','to','for','of','with','by',
+  'from','is','are','was','were','be','been','has','have','had','do','does',
+  'did','will','would','could','should','may','might','can','it','its','this',
+  'that','these','those','i','me','my','we','our','you','your','they','their',
+  'he','she','him','her','his','as','into','through','during','before','after',
+  'over','under','between','out','off','up','so','yet','nor','not','no','if',
+  'while','when','where','how','what','which','who','whom','use','used','using',
+  'also','than','then','very','just','even','all','any','each','few','more',
+  'most','other','some','such','own','same','both','here','there','about','via',
+  's','t','re','ve','ll','d','m','her','his',
+])
+
+function extractTagWords(text) {
+  if (!text) return []
+  return text.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/)
+    .filter(w => w.length > 3 && !STOP_WORDS.has(w) && !/^\d+$/.test(w))
+}
 const SUGGESTION_SESSION_URL =
   import.meta.env.VITE_SUGGESTION_SESSION_URL ||
   'https://requestsuggestionsessionhttp-lqo4ecc5hq-uc.a.run.app'
@@ -155,11 +179,86 @@ export default function App() {
   const [groups,     setGroups]     = useState([])
   const [viewMode,   setViewMode]   = useState('grouped') // 'flat' | 'grouped'
   const [expandedGroups, setExpandedGroups] = useState(new Set())
+  const [filterTags,     setFilterTags]     = useState(new Set())
+  const [conceptMap,     setConceptMap]     = useState(null)   // null=unfetched, []= loaded
+  const [loadingConcepts, setLoadingConcepts] = useState(false)
+  const [filterConcepts, setFilterConcepts] = useState(new Set())
   const canWrite = user?.email === 'david@prismism.com'
   const showToast = useCallback((msg, type = 'success') => {
     setToast({ msg, type })
     setTimeout(() => setToast(null), 3000)
   }, [])
+
+  // Build conceptMap from stored keywords + current records (used on load and after save)
+  const buildConceptMap = useCallback((storedConcepts) => {
+    return storedConcepts.map(({ concept, keywords }) => {
+      const nameWords = concept
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .toLowerCase().split(/\s+/)
+        .filter(w => w.length > 3)
+      const allKws = [...new Set([...keywords, ...nameWords])]
+      const ids = new Set(
+        records.filter(r => {
+          const desc = (r.description || '').toLowerCase()
+          return allKws.some(k => new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(desc))
+        }).map(r => r.id)
+      )
+      return { concept, ids, keywords: allKws }
+    }).filter(c => c.ids.size > 0)
+  }, [records])
+
+  // Owner-only: call Claude, save keywords to Firestore, rebuild map
+  const fetchConcepts = useCallback(async () => {
+    if (!records.length || !auth.currentUser) return
+    setLoadingConcepts(true)
+    setConceptMap(null)
+    try {
+      const sample = records.map(r => (r.description || '').slice(0, 150)).join('\n')
+      const data = await callClaude({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1024,
+        messages: [{
+          role: 'user',
+          content: `Identify 10-15 meaningful themes in these use-case descriptions.
+For each theme output exactly one line in this format (no bullets, no JSON, no extra text):
+ThemeName: keyword1, keyword2, keyword3, keyword4
+
+Descriptions:
+${sample}`
+        }]
+      })
+      const text = data.content?.[0]?.text ?? ''
+      const parsed = text.split('\n')
+        .map(line => line.trim())
+        .filter(line => line.includes(':'))
+        .map(line => {
+          const colon = line.indexOf(':')
+          const concept = line.slice(0, colon).trim()
+          const keywords = line.slice(colon + 1).split(',').map(k => k.trim().toLowerCase()).filter(Boolean)
+          return { concept, keywords }
+        })
+        .filter(c => c.concept && c.keywords.length)
+      if (!parsed.length) throw new Error('No concepts parsed from response')
+      await setDoc(doc(db, 'meta', 'concept_cloud'), { concepts: parsed, updatedAt: serverTimestamp() })
+      setConceptMap(buildConceptMap(parsed))
+    } catch (e) {
+      console.error('fetchConcepts failed', e)
+      setConceptMap([])
+    } finally {
+      setLoadingConcepts(false)
+    }
+  }, [records, buildConceptMap])
+
+  // Load stored concept keywords from Firestore and build map against current records
+  useEffect(() => {
+    if (!records.length) return
+    getDoc(doc(db, 'meta', 'concept_cloud'))
+      .then(snap => {
+        if (snap.exists()) setConceptMap(buildConceptMap(snap.data().concepts ?? []))
+        else setConceptMap([])
+      })
+      .catch(() => setConceptMap([]))
+  }, [records, buildConceptMap])
 
   useEffect(() => onAuthStateChanged(auth, setUser), [])
 
@@ -222,6 +321,16 @@ export default function App() {
   const categories = useMemo(() => [...new Set(records.map(r => r.category).filter(Boolean))].sort(), [records])
   const novelties  = useMemo(() => [...new Set(records.map(r => r.novelty).filter(Boolean))].sort(), [records])
 
+  const tagCounts = useMemo(() => {
+    const counts = {}
+    for (const r of records) {
+      for (const w of extractTagWords(r.description)) {
+        counts[w] = (counts[w] || 0) + 1
+      }
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 60)
+  }, [records])
+
   const filtered = useMemo(() => {
     const tokens = parseSearchTokens(q.trim())
     let r = records
@@ -229,10 +338,22 @@ export default function App() {
     if (filterCat) r = r.filter(rec => rec.category === filterCat)
     if (filterUnc) r = r.filter(rec => rec.uncertainty === filterUnc)
     if (filterNov) r = r.filter(rec => rec.novelty === filterNov)
+    if (filterTags.size) {
+      r = r.filter(rec => {
+        const words = new Set(extractTagWords(rec.description))
+        return [...filterTags].some(tag => words.has(tag))
+      })
+    }
+    if (filterConcepts.size && conceptMap) {
+      const allowed = new Set()
+      for (const entry of conceptMap) {
+        if (filterConcepts.has(entry.concept)) entry.ids.forEach(id => allowed.add(id))
+      }
+      r = r.filter(rec => allowed.has(rec.id))
+    }
     const { field, dir } = sort
     return [...r].sort((a, b) => {
       const av = a[field] ?? '', bv = b[field] ?? ''
-      // Numeric sort for seqId and any number fields
       if (typeof av === 'number' || typeof bv === 'number' || field === 'seqId') {
         const an = Number(av), bn = Number(bv)
         return dir === 'asc' ? an - bn : bn - an
@@ -241,7 +362,7 @@ export default function App() {
         ? String(av).localeCompare(String(bv))
         : String(bv).localeCompare(String(av))
     })
-  }, [records, q, matchMode, filterCat, filterUnc, filterNov, sort])
+  }, [records, q, matchMode, filterCat, filterUnc, filterNov, filterTags, filterConcepts, conceptMap, sort])
 
   // ── Group lookup maps ──────────────────────────────────────────────────────
 
@@ -509,7 +630,7 @@ export default function App() {
             </select>
           </div>
           <button
-            onClick={() => { setFilterCat(''); setFilterUnc(''); setFilterNov(''); setQ('') }}
+            onClick={() => { setFilterCat(''); setFilterUnc(''); setFilterNov(''); setQ(''); setFilterTags(new Set()) }}
             className="text-xs text-gray-600 hover:text-gray-400 text-left">
             Clear filters
           </button>
@@ -522,6 +643,9 @@ export default function App() {
                   {l}
                 </button>
               ))}
+            </div>
+            <div className="mt-1 text-[9px] text-gray-600 leading-tight">
+              v{APP_VERSION} · {BUILD_TIME}
             </div>
           </div>
           {canWrite && (
@@ -553,6 +677,30 @@ export default function App() {
               ))}
             </div>
           </div>
+
+          {/* Concept cloud */}
+          <TagCloud
+            tagCounts={tagCounts}
+            filterTags={filterTags}
+            onToggle={word => setFilterTags(prev => {
+              const next = new Set(prev)
+              next.has(word) ? next.delete(word) : next.add(word)
+              return next
+            })}
+            onClear={() => setFilterTags(new Set())}
+            conceptMap={conceptMap}
+            loadingConcepts={loadingConcepts}
+            filterConcepts={filterConcepts}
+            onToggleConcept={concept => setFilterConcepts(prev => {
+              const next = new Set(prev)
+              next.has(concept) ? next.delete(concept) : next.add(concept)
+              return next
+            })}
+            onClearConcepts={() => setFilterConcepts(new Set())}
+            onFetchConcepts={fetchConcepts}
+            canRefresh={canWrite}
+            filteredCount={filtered.length}
+          />
 
           {/* Table + detail */}
           <div className="flex flex-1 overflow-hidden">
@@ -762,6 +910,92 @@ export default function App() {
         <div className={`fixed bottom-5 right-5 px-3 py-2 rounded shadow-xl text-xs z-50 font-medium
           ${toast.type === 'error' ? 'bg-red-800 text-red-100' : 'bg-emerald-800 text-emerald-100'}`}>
           {toast.msg}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Concept Cloud ──────────────────────────────────────────────────────────
+
+function TagCloud({
+  conceptMap, loadingConcepts, filterConcepts,
+  onToggleConcept, onClearConcepts, onFetchConcepts, canRefresh, filteredCount
+}) {
+  const [open, setOpen] = useState(false)
+  const handleOpen = () => setOpen(o => !o)
+  const totalCount = conceptMap ? conceptMap.length : 0
+
+  const activeCount = filterConcepts.size
+
+  // Size bubbles by concept's record count
+  const maxSize = conceptMap ? Math.max(...conceptMap.map(c => c.ids.size), 1) : 1
+  const bubbleStyle = count => {
+    const r = count / maxSize
+    const fs = Math.round(10 + r * 9)
+    const px = Math.round(7 + r * 9)
+    const py = Math.round(4 + r * 5)
+    return { fontSize: `${fs}px`, padding: `${py}px ${px}px`, lineHeight: 1.2 }
+  }
+
+  return (
+    <div className="border-b border-gray-800 bg-gray-900 shrink-0">
+      <button onClick={handleOpen}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-gray-800 transition-colors">
+        <ChevronDown size={12}
+          className={`text-gray-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}/>
+        <span className="text-[10px] uppercase tracking-wide text-gray-500">Concepts</span>
+        {totalCount > 0 && (
+          <span className="text-[10px] text-gray-500">{totalCount}</span>
+        )}
+        {activeCount > 0 && (
+          <span className="text-[10px] text-blue-400">{activeCount} active · {filteredCount} rows</span>
+        )}
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3">
+          {(loadingConcepts || conceptMap === null) && (
+            <p className="text-[10px] text-gray-500 py-2">{loadingConcepts ? 'Analysing records…' : 'Loading…'}</p>
+          )}
+          {!loadingConcepts && conceptMap !== null && conceptMap.length === 0 && (
+            <p className="text-[10px] text-gray-500 py-2">
+              No concepts available.{' '}
+              {canRefresh && <button onClick={onFetchConcepts} className="text-blue-400 hover:text-blue-300">Generate</button>}
+            </p>
+          )}
+          {!loadingConcepts && conceptMap && conceptMap.length > 0 && (
+            <div className="flex flex-wrap gap-2 items-center pt-1">
+              {conceptMap.map(({ concept, ids, keywords }) => {
+                const active = filterConcepts.has(concept)
+                return (
+                  <button key={concept} onClick={() => onToggleConcept(concept)}
+                    title={`${ids.size} records — keywords: ${(keywords||[]).join(', ')}`}
+                    style={bubbleStyle(ids.size)}
+                    className={`rounded-full font-medium transition-colors ${
+                      active
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                    }`}>
+                    {concept}
+                  </button>
+                )
+              })}
+              {canRefresh && (
+                <button onClick={onFetchConcepts}
+                  title="Re-generate concepts"
+                  className="text-[10px] text-gray-600 hover:text-gray-400 flex items-center gap-0.5 ml-1">
+                  ↺ refresh
+                </button>
+              )}
+              {activeCount > 0 && (
+                <button onClick={onClearConcepts}
+                  className="text-[10px] text-gray-600 hover:text-gray-400 flex items-center gap-0.5">
+                  <X size={10}/> clear
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

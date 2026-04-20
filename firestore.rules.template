@@ -28,6 +28,11 @@ service cloud.firestore {
       allow create, update, delete: if isOwner();
     }
 
+    match /use_case_groups/{docId} {
+      allow read: if true;
+      allow create, update, delete: if isOwner();
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

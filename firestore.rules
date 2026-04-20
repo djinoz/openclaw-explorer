@@ -23,12 +23,12 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    match /use_case_groups/{docId} {
+    match /meta/{docId} {
       allow read: if true;
       allow create, update, delete: if isOwner();
     }
 
-    match /meta/{docId} {
+    match /use_case_groups/{docId} {
       allow read: if true;
       allow create, update, delete: if isOwner();
     }
