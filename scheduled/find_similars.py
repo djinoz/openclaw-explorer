@@ -42,6 +42,7 @@ load_dotenv(Path(__file__).parent / ".env")
 FIRESTORE_PROJECT_ID = os.environ["FIRESTORE_PROJECT_ID"]
 ANTHROPIC_API_KEY    = os.environ["ANTHROPIC_API_KEY"]
 DRY_RUN              = os.environ.get("DRY_RUN", "0") == "1"
+DEBUG_CLAUDE         = os.environ.get("DEBUG_CLAUDE", "0") == "1"
 CREDENTIALS_FILE     = os.environ.get(
     "GOOGLE_APPLICATION_CREDENTIALS",
     str(Path(__file__).parent / "service_account.json"),
@@ -67,33 +68,24 @@ SIMILARITY_SYSTEM = """\
 You are a research analyst identifying duplicate or near-duplicate entries in a
 use-case database.
 
-Your task: find records that describe the SAME specific use case — same
-implementation, same product launch, or the same original announcement
-re-posted from different sources.
+GROUP records when any of these apply:
+  • The same original announcement, tweet, or product launch reported from
+    multiple sources with minor wording differences.
+  • The same company's identical deployment described in separate records
+    (e.g. one from the company's blog, one from a news article, one from
+    a tweet — all describing the same rollout).
+  • Descriptions that are paraphrases of each other with no meaningful
+    informational difference.
+  • One record is an update or follow-up to the same use case.
 
-CRITICAL — do NOT group records just because they share a broad domain.
+DO NOT group records that merely share a broad domain or theme.
 These are DIFFERENT use cases even when superficially similar:
+  • Same workflow type but different platforms/companies/languages.
+  • Same industry but different regulatory or business contexts.
+  • Same product category but distinct product names.
 
-  • "Automate a YouTube video-production pipeline" vs "Automate a tweet/post
-    production pipeline" — different content types, different toolchains.
-  • "Build a coding assistant for Python developers" vs "Build a coding
-    assistant for Java developers" — different languages, different contexts.
-  • "Xero accounting automation" vs "QuickBooks accounting automation" —
-    different products used by different companies.
-  • "Clinical documentation in hospitals" vs "Legal contract documentation" —
-    different regulatory domains.
-  • "Customer support bot for SaaS" vs "Customer support bot for e-commerce" —
-    different business models and buyer personas.
-  • "Pipeline for making YouTube videos" vs "Pipeline for making a TV series"
-    — completely different scale and workflow.
-
-DO group records only when:
-  • They reference the same original tweet / post / announcement from
-    different sources or with minor wording differences.
-  • They describe the exact same company's identical deployment.
-  • The descriptions are paraphrases with no meaningful informational
-    difference.
-  • One record is an update or follow-up about the same use case.
+Practical test: would a researcher merging these records lose meaningful
+information? If yes — keep separate. If no — group them.
 
 For each proposed group, identify the "lead" record: the most detailed,
 earliest-dated, or most authoritative source. All others are "members".
@@ -179,6 +171,26 @@ def write_group(token: str, lead_id: str, member_ids: list[str], reason: str) ->
     return resp.json().get("name", "").split("/")[-1]
 
 
+def extend_group(token: str, group: dict, new_member_ids: list[str]) -> None:
+    existing = list(group.get("memberIds") or [])
+    merged = list(dict.fromkeys(existing + new_member_ids))  # deduplicate, preserve order
+    if merged == existing:
+        return
+    now = datetime.datetime.utcnow().isoformat() + "Z"
+    gid = group["_id"]
+    resp = requests.patch(
+        f"{FIRESTORE_BASE}/use_case_groups/{gid}",
+        headers=auth_headers(token),
+        params={"updateMask.fieldPaths": ["memberIds", "updatedAt"]},
+        json={"fields": {
+            "memberIds": {"arrayValue": {"values": [{"stringValue": m} for m in merged]}},
+            "updatedAt": {"timestampValue": now},
+        }},
+        timeout=30,
+    )
+    resp.raise_for_status()
+
+
 # ── Seq-ID assignment (matches app client-side ordering) ──────────────────────
 
 def assign_seq_ids(records: list[dict]) -> list[dict]:
@@ -204,6 +216,69 @@ def format_for_claude(records: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
+def merge_proposals(proposals: list[dict]) -> list[dict]:
+    """Merge proposals that share any record ID into a single larger group."""
+    # Build union-find over seqIds
+    parent: dict[int, int] = {}
+
+    def find(x: int) -> int:
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent.get(x, x), x)  # path compression
+            x = parent.get(x, x)
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    # Record all seqIds involved and union them within each proposal
+    all_ids: set[int] = set()
+    for p in proposals:
+        lead = p.get("leadSeqId")
+        members = p.get("memberSeqIds") or []
+        if lead is None:
+            continue
+        all_ids.add(lead)
+        for m in members:
+            all_ids.add(m)
+            union(lead, m)
+
+    # Group seqIds by their root
+    groups: dict[int, set[int]] = {}
+    for sid in all_ids:
+        root = find(sid)
+        groups.setdefault(root, set()).add(sid)
+
+    # Build merged proposals: lead = lowest seqId in group (most likely the earliest)
+    # Also collect reasons from original proposals
+    reasons: dict[int, list[str]] = {}  # root → reasons
+    lead_votes: dict[int, dict[int, int]] = {}  # root → {seqId: vote_count}
+    for p in proposals:
+        lead = p.get("leadSeqId")
+        if lead is None:
+            continue
+        root = find(lead)
+        reasons.setdefault(root, [])
+        if p.get("reason"):
+            reasons[root].append(p["reason"])
+        lead_votes.setdefault(root, {})
+        lead_votes[root][lead] = lead_votes[root].get(lead, 0) + 1
+
+    merged = []
+    for root, sids in groups.items():
+        if len(sids) < 2:
+            continue
+        # Pick lead: most-voted, then lowest seqId as tiebreak
+        vote_map = lead_votes.get(root, {})
+        lead_seq = min(sids, key=lambda s: (-vote_map.get(s, 0), s))
+        member_seqs = sorted(sids - {lead_seq})
+        reason = "; ".join(dict.fromkeys(reasons.get(root, [])))  # deduplicate
+        merged.append({"leadSeqId": lead_seq, "memberSeqIds": member_seqs, "reason": reason})
+
+    return merged
+
+
 def find_similars_in_cluster(client: Anthropic, records: list[dict]) -> list[dict]:
     records_text = format_for_claude(records)
     log.debug("Sending %d records to Claude", len(records))
@@ -221,6 +296,8 @@ def find_similars_in_cluster(client: Anthropic, records: list[dict]) -> list[dic
         }],
     )
     raw = resp.content[0].text.strip()
+    if DEBUG_CLAUDE:
+        log.info("Claude raw response:\n%s", raw[:2000])
     # Strip markdown fences if Claude wraps the JSON
     raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     # Extract the JSON array even if Claude prepends reasoning text
@@ -281,6 +358,27 @@ def main():
 
     # Map seqId → Firestore doc ID for resolving Claude's output
     seq_to_doc: dict[int, str] = {r["seqId"]: r["_id"] for r in records}
+    doc_to_record: dict[str, dict] = {r["_id"]: r for r in records}
+
+    # Map lead doc ID → existing group (for extending groups with new members)
+    lead_doc_to_group: dict[str, dict] = {}
+    for g in existing_groups:
+        if g.get("status") != "rejected" and g.get("leadId"):
+            lead_doc_to_group[g["leadId"]] = g
+
+    # Build per-category anchor records (leads of existing groups in same category)
+    # so ungrouped records can be matched against them
+    anchor_clusters: dict[str, list[dict]] = {}
+    for lead_doc_id, group in lead_doc_to_group.items():
+        rec = doc_to_record.get(lead_doc_id)
+        if not rec:
+            continue
+        key = rec.get("category") or "(unknown)"
+        if rec.get("subcategory"):
+            key = f"{key} / {rec['subcategory']}"
+        anchor_rec = dict(rec)
+        anchor_rec["_anchor"] = True
+        anchor_clusters.setdefault(key, []).append(anchor_rec)
 
     # Cluster by category (and optionally subcategory)
     clusters: dict[str, list[dict]] = {}
@@ -308,6 +406,8 @@ def main():
         if len(batches) > 1:
             log.info("    → split into %d batches of ≤%d", len(batches), MAX_RECORDS_PER_BATCH)
 
+        anchors = anchor_clusters.get(cat, [])
+
         for batch_idx, batch in enumerate(batches):
             batch_ids = {r["_id"] for r in batch}
             if batch_ids.issubset(seen):
@@ -318,7 +418,15 @@ def main():
             new_count = len(batch_ids - seen)
             log.info("    batch %d: %d new record(s) in batch", batch_idx + 1, new_count)
 
-            proposals = find_similars_in_cluster(client, batch)
+            # Include anchor records (existing group leads) so orphans can match them.
+            # Anchors are appended after the ungrouped batch records.
+            batch_with_anchors = batch + [a for a in anchors if a["_id"] not in batch_ids]
+            if len(batch_with_anchors) > len(batch):
+                log.info("    batch %d: +%d anchor(s) injected",
+                         batch_idx + 1, len(batch_with_anchors) - len(batch))
+
+            proposals = find_similars_in_cluster(client, batch_with_anchors)
+            proposals = merge_proposals(proposals)
             seen.update(batch_ids)
             save_checkpoint(seen)
 
@@ -329,9 +437,9 @@ def main():
             log.info("    batch %d: %d group(s) proposed", batch_idx + 1, len(proposals))
 
             for proposal in proposals:
-                lead_seq   = proposal.get("leadSeqId")
+                lead_seq    = proposal.get("leadSeqId")
                 member_seqs = proposal.get("memberSeqIds") or []
-                reason     = proposal.get("reason", "")
+                reason      = proposal.get("reason", "")
 
                 if not lead_seq or not member_seqs:
                     log.warning("    Skipping malformed proposal: %s", proposal)
@@ -347,16 +455,39 @@ def main():
                     )
                     continue
 
+                # Filter out member IDs that are already in ANY existing group
+                # (anchors are already grouped; only add truly ungrouped members)
+                new_member_ids = [m for m in member_doc_ids if m not in already_grouped]
+
+                existing_group = lead_doc_to_group.get(lead_doc_id)
+
                 if DRY_RUN:
+                    action = "EXTEND" if existing_group else "NEW GROUP"
                     print(json.dumps({
+                        "action":        action,
                         "leadSeqId":     lead_seq,
                         "memberSeqIds":  member_seqs,
                         "reason":        reason,
                         "leadDocId":     lead_doc_id,
-                        "memberDocIds":  member_doc_ids,
+                        "newMemberDocIds": new_member_ids,
                     }, indent=2))
+                elif existing_group:
+                    if not new_member_ids:
+                        log.info("    batch %d: anchor #%s matched but no new members to add",
+                                 batch_idx + 1, lead_seq)
+                        continue
+                    extend_group(token, existing_group, new_member_ids)
+                    log.info(
+                        "    EXTENDED GROUP %s ← +%s | %s",
+                        existing_group["_id"], new_member_ids, reason[:70],
+                    )
+                    total_proposed += 1
                 else:
-                    gid = write_group(token, lead_doc_id, member_doc_ids, reason)
+                    if not new_member_ids:
+                        log.info("    batch %d: proposal #%s has no ungrouped members, skipping",
+                                 batch_idx + 1, lead_seq)
+                        continue
+                    gid = write_group(token, lead_doc_id, new_member_ids, reason)
                     log.info(
                         "    NEW GROUP #%s ← %s | %s [%s]",
                         lead_seq, member_seqs, reason[:70], gid,
