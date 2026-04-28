@@ -3,6 +3,8 @@ Description: 3x daily search for new OpenClaw/Hermes/Claude agent use cases acro
 Prompt:
 You are running the OpenClaw use-case ingest job on a local agent (OpenClaw / Hermes). Your goal is to find 5–15 NEW, non-duplicate use cases of OpenClaw / Hermes / Claude agents being used in real workflows, with special priority on (a) revenue-generating deployments and (b) multi-step / iterative / long-running agent workflows that go beyond a single one-shot prompt.
 
+Freshness matters. Prefer genuinely recent findings first, and only fall back to older source material when you cannot find enough strong recent items.
+
 The working directory for this job is defined by the environment variable $OPENCLAW_SCHEDULED_DIR. All file reads and writes below use that path as the base.
 
 
@@ -21,6 +23,16 @@ Read `$OPENCLAW_SCHEDULED_DIR/pending_records_*.json` (most recent file) and `$O
 
 ## Step 2 — Run all searches
 
+Freshness policy for search and selection:
+- Strongly prefer items whose original post/article date is within the last 7 days relative to the run date.
+- If you cannot find enough high-quality items from the last 7 days, expand to the last 30 days.
+- For a normal batch of roughly 10 selected items, aim for at least 2–3 items from the last 7 days whenever the search results make that possible.
+- Only use older items when they are exceptionally strong and you still do not have enough recent qualifying results.
+- Any selected item older than 30 days must be treated as a fallback item and explicitly flagged as such in the final report.
+- When an older item is included, treat that as an exception and mention in the final report that it was chosen as a fallback due to insufficient recent supply.
+- If multiple candidates are similar in quality, always choose the more recent one.
+- Do not spend scarce slots on old posts just because they are new to this database; recency should win unless the older item is materially better.
+
 
 
 Use WebSearch for general and authenticated-wall sources (X, Reddit web). Use WebFetch for public JSON APIs (HN Algolia, Reddit JSON API, IndieHackers). Wait 3–5 seconds between requests to avoid rate limiting.
@@ -35,9 +47,13 @@ Use WebSearch for general and authenticated-wall sources (X, Reddit web). Use We
 
 3. WebFetch: `https://hn.algolia.com/api/v1/search?query=claude+agent+automation&tags=story&hitsPerPage=20`
 
+Prefer newest results first from HN and deprioritize old threads unless they are uniquely strong.
+
 
 
 ### Reddit (public JSON API via WebFetch — no login required)
+
+Prefer `sort=new` results and treat older/high-engagement threads as fallback rather than primary targets.
 
 4. WebFetch: `https://www.reddit.com/search.json?q=openclaw&sort=new&t=week&limit=25`
 
@@ -53,6 +69,8 @@ Note: The Reddit JSON API is public and does not require a logged-in session. If
 
 
 ### X / Twitter (WebSearch — no authenticated browser available)
+
+Bias toward recent posts from the last few days. If the search surface mixes in older evergreen posts, skip them unless they are clearly stronger than newer candidates.
 
 8. WebSearch: `openclaw site:x.com OR site:twitter.com`
 
@@ -81,6 +99,8 @@ If IndieHackers returns a JS-rendered blank, fall back to:
 
 ### General web (WebSearch)
 
+When choosing among general-web hits, prefer recent publication dates and avoid filling the batch with older historical examples unless the recent search pool is thin.
+
 16. WebSearch: `"openclaw" real-world workflow OR automation`
 
 17. WebSearch: `"hermes" agent workflow 2026`
@@ -95,7 +115,7 @@ If IndieHackers returns a JS-rendered blank, fall back to:
 
 
 
-For each result, ask: does this describe a **real, specific deployment** of OpenClaw / Hermes / a Claude agent in an actual workflow? Discard:
+For each result, ask: does this describe a **real, specific deployment** of OpenClaw / Hermes / a Claude agent in an actual workflow? Also ask: is it recent enough to deserve one of today’s slots? Discard:
 
 - Generic tutorials, how-to guides, Anthropic marketing
 
@@ -104,6 +124,7 @@ For each result, ask: does this describe a **real, specific deployment** of Open
 - Results matching any URL/ID from Step 1 (dupes)
 
 - Near-duplicates of each other (same use case, different post)
+- Older candidates that are weaker than available newer candidates
 
 
 
@@ -126,6 +147,11 @@ Tag each qualifying result:
 
 
 For each qualifying use case, produce a JSON object with EXACTLY these keys (matching what ingest.py expects):
+
+Date selection rules:
+- `tweetDate` must be the original source/post/article date when it can be determined reliably.
+- `searchDate` must be the current run date.
+- If the source date is unclear, do not invent a recent `tweetDate`; leave it empty rather than fabricating freshness.
 
 
 
@@ -206,3 +232,10 @@ If egress to oauth2.googleapis.com is blocked (proxy error), leave the pending f
 
 
 Print a markdown summary table of all new records, tagged by revenue_signal and deep_reasoning. State: searches run, raw candidates reviewed, dupes skipped, new records written, Firestore status.
+
+Also include a short freshness summary:
+- how many selected records were from the last 7 days
+- whether the batch met the target of at least 2–3 last-7-day items when feasible
+- how many selected records were from the last 30 days
+- how many were older fallback items
+- why any older fallback items were included
