@@ -7,8 +7,9 @@ import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
 import { db, auth, provider } from './firebase.js'
 import { csvEscape, safeUrl, normalizeSuggestionUrl } from './security.js'
 import { getDeepLinkDocId, selectDeepLinkedRecord } from './deeplink.js'
+import { prepareCsvImport } from './csvImport.js'
 import {
-  Search, Download, Upload, BarChart2, Bot,
+  Search, BarChart2, Bot,
   ChevronRight, ChevronDown, Layers, X, LogIn, LogOut, Pencil, Trash2,
   CheckCircle, Send, PlusCircle, Inbox, Link2, UserRound, Globe, ShieldAlert
 } from 'lucide-react'
@@ -101,39 +102,6 @@ function downloadCsv(records) {
   a.href = URL.createObjectURL(blob)
   a.download = 'openclaw-usecases.csv'
   a.click()
-}
-
-const CSV_COL_MAP = {
-  'category': 'category',
-  'source user': 'sourceUser', 'sourceuser': 'sourceUser',
-  'description': 'description', 'one-sentence description': 'description',
-  'reference urls': 'refUrls', 'refurls': 'refUrls',
-  'tweet date': 'tweetDate', 'tweetdate': 'tweetDate',
-  'search date': 'searchDate', 'searchdate': 'searchDate',
-  'notes': 'notes',
-  'uncertainty': 'uncertainty', 'uncertainty / confidence': 'uncertainty',
-  'novelty': 'novelty', 'novelty / already documented': 'novelty',
-}
-
-function parseCSV(text) {
-  const lines = text.split('\n').filter(Boolean)
-  if (!lines.length) return []
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/"/g, ''))
-  return lines.slice(1).map(line => {
-    const vals = []; let cur = '', inQ = false
-    for (const ch of line) {
-      if (ch === '"') inQ = !inQ
-      else if (ch === ',' && !inQ) { vals.push(cur); cur = '' }
-      else cur += ch
-    }
-    vals.push(cur)
-    const row = {}
-    headers.forEach((h, i) => {
-      const k = CSV_COL_MAP[h] || h
-      row[k] = (vals[i] ?? '').trim()
-    })
-    return row
-  }).filter(r => r.category || r.description)
 }
 
 async function callSuggestionEndpoint(path, body, bearerToken) {
@@ -624,8 +592,7 @@ ${sample}`
             </button>
           )}
           <IconBtn onClick={() => setStatsOpen(true)}   title="Stats"><BarChart2 size={14}/></IconBtn>
-          {canWrite && <IconBtn onClick={() => setImportOpen(true)}  title="Import CSV"><Upload size={14}/></IconBtn>}
-          <IconBtn onClick={() => downloadCsv(filtered)} title="Export CSV"><Download size={14}/></IconBtn>
+          {/* CSV import/export intentionally hidden for now */}
           <button onClick={() => setTriageOpen(t => !t)}
             className="flex items-center gap-1 px-2 py-1 rounded bg-blue-800 hover:bg-blue-700 text-xs font-medium">
             <Bot size={12}/> Triage
@@ -1854,20 +1821,37 @@ function StatsModal({ records, onClose }) {
 
 function ImportModal({ onClose, onImport }) {
   const [rows, setRows] = useState(null)
+  const [error, setError] = useState(null)
+
+  const handleFileChange = e => {
+    const f = e.target.files[0]
+    if (!f) return
+    f.text().then(text => {
+      const result = prepareCsvImport(text)
+      if (result.error) {
+        setRows(null)
+        setError(result.error)
+        return
+      }
+      setRows(result.rows)
+      setError(null)
+    })
+  }
+
   return (
     <Modal title="Import CSV" onClose={onClose}>
       <p className="text-xs text-gray-400 mb-3">
         Export from Google Sheets via <strong className="text-gray-300">File → Download → CSV</strong>, then select the file below.<br/>
-        Recognised columns: Category, Source user, Description, Reference URLs, Tweet date, Search date, Notes, Uncertainty, Novelty.
+        Recognised columns: Category, Source user, Description, Reference URLs, Reference URLs / Tweets, Tweet date, Search date, Notes, Uncertainty, Novelty.
       </p>
       <label className="inline-flex items-center gap-2 cursor-pointer mb-3">
         <span className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-xs font-medium border border-gray-600">
           Choose CSV file…
         </span>
         {rows && <span className="text-xs text-emerald-400">{rows.length} rows ready</span>}
-        <input type="file" accept=".csv" className="sr-only"
-          onChange={e => { const f = e.target.files[0]; if (!f) return; f.text().then(t => setRows(parseCSV(t))) }}/>
+        <input type="file" accept=".csv" className="sr-only" onChange={handleFileChange}/>
       </label>
+      {error && <p className="text-xs text-red-300 mb-3">{error}</p>}
       <div className="flex gap-2">
         <button onClick={() => rows && onImport(rows)} disabled={!rows}
           className="px-3 py-1.5 rounded bg-blue-700 hover:bg-blue-600 text-xs font-medium disabled:opacity-40">
