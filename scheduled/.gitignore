@@ -1,0 +1,19 @@
+# Local scheduled-task secrets and generated state
+.env
+service_account.json
+*.json
+!*.example
+seen_ids.txt
+
+# Local Python envs
+.venv/
+.ingest-venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Local editor/runtime config
+.claude/
+
+# macOS
+.DS_Store

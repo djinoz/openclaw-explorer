@@ -309,7 +309,7 @@ def apply_field_aliases(record: dict) -> dict:
     return {FIELD_ALIASES.get(k, k): v for k, v in record.items()}
 
 
-def normalize_record(record: dict) -> dict | None:
+def normalize_record(record: dict):
     cleaned = {}
     for key in ALLOWED_FIELDS:
         if key not in record:
@@ -334,7 +334,7 @@ def normalize_record(record: dict) -> dict | None:
     return cleaned
 
 
-def normalize_suggestion_url(value: str) -> str | None:
+def normalize_suggestion_url(value: str):
     from urllib.parse import urlsplit, urlunsplit
 
     if not isinstance(value, str):

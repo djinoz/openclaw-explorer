@@ -6,6 +6,7 @@ import {
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
 import { db, auth, provider } from './firebase.js'
 import { csvEscape, safeUrl, normalizeSuggestionUrl } from './security.js'
+import { getDeepLinkDocId, selectDeepLinkedRecord } from './deeplink.js'
 import {
   Search, Download, Upload, BarChart2, Bot,
   ChevronRight, ChevronDown, Layers, X, LogIn, LogOut, Pencil, Trash2,
@@ -168,6 +169,10 @@ export default function App() {
   const [filterNov,  setFilterNov]  = useState('')
   const [sort,       setSort]       = useState({ field: 'tweetDate', dir: 'desc' })
   const [selected,   setSelected]   = useState(null)
+  const [deepLinkDocId, setDeepLinkDocId] = useState(() => {
+    if (typeof window === 'undefined') return null
+    return getDeepLinkDocId(window.location.href)
+  })
   const [editing,    setEditing]    = useState(null)
   const [triageOpen, setTriageOpen] = useState(false)
   const [statsOpen,  setStatsOpen]  = useState(false)
@@ -261,6 +266,17 @@ ${sample}`
   }, [records, buildConceptMap])
 
   useEffect(() => onAuthStateChanged(auth, setUser), [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+    const syncDeepLink = () => setDeepLinkDocId(getDeepLinkDocId(window.location.href))
+    window.addEventListener('popstate', syncDeepLink)
+    window.addEventListener('hashchange', syncDeepLink)
+    return () => {
+      window.removeEventListener('popstate', syncDeepLink)
+      window.removeEventListener('hashchange', syncDeepLink)
+    }
+  }, [])
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -379,6 +395,25 @@ ${sample}`
     groups.forEach(g => (g.memberIds ?? []).forEach(mid => { map[mid] = g }))
     return map
   }, [groups])
+
+  useEffect(() => {
+    if (!deepLinkDocId || !records.length) return
+    const match = selectDeepLinkedRecord(records, `https://openclaw-explorer.web.app/?id=${encodeURIComponent(deepLinkDocId)}`)
+    if (!match) return
+
+    const group = memberToGroup[match.id] ?? groupByLeadDocId[match.id] ?? null
+    if (group) {
+      setExpandedGroups(current => {
+        if (current.has(group.id)) return current
+        const next = new Set(current)
+        next.add(group.id)
+        return next
+      })
+    }
+
+    setSelected(current => (current?.id === match.id ? current : match))
+    setEditing(null)
+  }, [deepLinkDocId, records, memberToGroup, groupByLeadDocId])
 
   // displayRows: flattened list of { type: 'flat'|'lead'|'member', record, group? }
   const displayRows = useMemo(() => {

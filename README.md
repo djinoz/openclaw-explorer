@@ -133,6 +133,63 @@ Set these environment variables (e.g. in a `.env` file that is also git-ignored)
 | `ANTHROPIC_API_KEY` | Claude API key, if your upstream scheduler does extraction |
 | `SEARCH_API_KEY` | Web search API key, if your upstream scheduler does search |
 
+### Shared scheduled runtime + MCP query server
+
+The `scheduled/` folder is now a **single shared runtime** for both:
+
+- the existing scheduled ingest/similarity jobs
+- the local read-only Firestore MCP server
+
+That means both flows should use the same:
+- virtualenv: `scheduled/.venv`
+- env file: `scheduled/.env`
+- credentials file: `scheduled/service_account.json` (or another path via `GOOGLE_APPLICATION_CREDENTIALS`)
+
+Key shared env vars:
+- `FIRESTORE_PROJECT_ID`
+- `GOOGLE_APPLICATION_CREDENTIALS`
+- `ANTHROPIC_API_KEY` (needed for similarity/grouping jobs)
+- `SEARCH_API_KEY` (if your upstream scheduled collection flow uses it)
+- `DRY_RUN`
+
+Setup:
+
+```bash
+cd scheduled
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# fill in FIRESTORE_PROJECT_ID and local credentials
+# add ANTHROPIC_API_KEY / SEARCH_API_KEY if your scheduled jobs need them
+python test_openclaw_db_mcp.py
+```
+
+Legacy scheduled jobs still run from this same environment, for example:
+
+```bash
+cd scheduled
+source .venv/bin/activate
+cat pending_records_YYYY-MM-DD_HH.json | python ingest.py
+python find_similars.py
+```
+
+The MCP server files are:
+- server file: `scheduled/mcp_server.py`
+- shared Firestore client logic: `scheduled/firestore_client.py`
+- smoke test: `scheduled/test_openclaw_db_mcp.py`
+
+If you want to register it with OpenClaw MCP, configure a stdio server that runs the scheduled venv Python with `mcp_server.py` as the sole argument. Do not commit machine-specific absolute paths or local config exports.
+
+The MCP server exposes:
+- `search_use_cases`
+- `get_use_case`
+- `get_stats`
+- `list_categories`
+- `get_groups`
+- `get_suggestion_queue`
+- `refresh_cache`
+
 ### Running manually
 
 ```bash

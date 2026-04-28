@@ -10,7 +10,7 @@
     "generate-rules": "node scripts/generate-rules.js",
     "deploy": "npm run generate-rules && npm run build && firebase deploy",
     "seed": "node scripts/seed-firestore.js",
-    "test": "npm run generate-rules && node --test tests/security.test.js && python3 -m unittest discover -s tests -p 'test_*.py'"
+    "test": "npm run generate-rules && node --test tests/*.test.js && python3 -m unittest discover -s tests -p 'test_*.py'"
   },
   "dependencies": {
     "firebase": "^12.8.0",

@@ -92,7 +92,7 @@ def apply_field_aliases(record: dict) -> dict:
     return {FIELD_ALIASES.get(k, k): v for k, v in record.items()}
 
 
-def normalize_record(record: dict) -> dict | None:
+def normalize_record(record: dict):
     cleaned = {}
     for key in ALLOWED_FIELDS:
         if key not in record:
