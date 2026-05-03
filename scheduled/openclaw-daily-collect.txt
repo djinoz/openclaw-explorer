@@ -118,16 +118,29 @@ When choosing among general-web hits, prefer recent publication dates and avoid 
 
 
 
-For each result, ask: does this describe a **real, specific deployment** of OpenClaw / Hermes / a Claude agent in an actual workflow? Also ask: is it recent enough to deserve one of today’s slots? Discard:
+For each result, ask: does this describe a **real, specific deployment** of OpenClaw / Hermes / a Claude agent **running autonomously** in an actual workflow? The agent must be the *actor* — doing things on its own, not merely assisting a human who is doing the work. Also ask: is it recent enough to deserve one of today’s slots?
+
+**The core litmus test:** After the thing described is done, is an OpenClaw / Hermes / Cowork / Claude agent *still* running and doing things autonomously? If the answer is no — if the "agent" was just a one-off assistant the human directed — discard the result.
+
+Discard:
 
 - Generic tutorials, how-to guides, Anthropic marketing
 
-- Speculation or "I'm thinking of building..." posts
+- Speculation or "I’m thinking of building..." posts
 
 - Results matching any URL/ID from Step 1 (dupes)
 
 - Near-duplicates of each other (same use case, different post)
+
 - Older candidates that are weaker than available newer candidates
+
+- **"Built with Claude/AI" stories** — posts where a person used Claude Code, Claude chat, or any LLM *as a coding or writing assistant* to build a product, but the finished product itself does not contain or run an agent. Example to reject: "I used Claude Code to help me write the Rust core of my macOS app." The finished app is not an agent — discard. The test: does the *deployed product or workflow* contain an agent that keeps running after the build phase?
+
+- **One-shot prompting showcases** — a single human prompt produces a single output, even if the output is impressive. Must involve scheduling, memory, sub-agents, iteration, or a multi-step autonomous pipeline to qualify.
+
+- **Pure product-announcement posts** with no workflow evidence — a launch tweet or ProductHunt card that describes what a product *will* do, with no sign of real users or a running deployment.
+
+- **Comparison / overview articles** that survey the agent landscape but do not themselves document any specific deployment (e.g. "OpenClaw vs Claude Cowork" roundups, "Top 10 use cases" listicles).
 
 
 
