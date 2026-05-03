@@ -134,7 +134,7 @@ Discard:
 
 - Older candidates that are weaker than available newer candidates
 
-- **"Built with Claude/AI" stories** — posts where a person used Claude Code, Claude chat, or any LLM *as a coding or writing assistant* to build a product, but the finished product itself does not contain or run an agent. Example to reject: "I used Claude Code to help me write the Rust core of my macOS app." The finished app is not an agent — discard. The test: does the *deployed product or workflow* contain an agent that keeps running after the build phase?
+- **"Built with Claude/AI" stories** — posts where a person used Claude Code, Claude chat, or any LLM *as a coding or writing assistant* to build a product, but the finished product itself does not contain or run an agent. Example to reject: "I used Claude Code to help me write the Rust core of my macOS app." The finished app is not an agent — discard. This also covers automated build pipelines: a shell script that loops Claude invocations overnight to produce 50 static browser tools is still a build process, not an agentic deployment — however impressive the tooling or however parallel/automated the build was. The question is never how the building happened; it's whether an agent is operating autonomously in the finished result. The test: does the *deployed product or workflow* contain an agent that keeps running after the build phase?
 
 - **One-shot prompting showcases** — a single human prompt produces a single output, even if the output is impressive. Must involve scheduling, memory, sub-agents, iteration, or a multi-step autonomous pipeline to qualify.
 
