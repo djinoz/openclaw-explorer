@@ -151,6 +151,7 @@ export default function App() {
   const [suggestions, setSuggestions] = useState([])
   const [groups,     setGroups]     = useState([])
   const [viewMode,   setViewMode]   = useState('grouped') // 'flat' | 'grouped'
+  const [filterScope, setFilterScope] = useState('')      // '' = none (hide tagged) | 'all' | label
   const [expandedGroups, setExpandedGroups] = useState(new Set())
   const [filterTags,     setFilterTags]     = useState(new Set())
   const [conceptMap,     setConceptMap]     = useState(null)   // null=unfetched, []= loaded
@@ -305,6 +306,17 @@ ${sample}`
   const categories = useMemo(() => [...new Set(records.map(r => r.category).filter(Boolean))].sort(), [records])
   const novelties  = useMemo(() => [...new Set(records.map(r => r.novelty).filter(Boolean))].sort(), [records])
 
+  const filterCounts = useMemo(() => {
+    const cat = {}, unc = {}, nov = {}, scope = {}
+    for (const r of records) {
+      if (r.category)      cat[r.category]      = (cat[r.category]      || 0) + 1
+      if (r.uncertainty)   unc[r.uncertainty]   = (unc[r.uncertainty]   || 0) + 1
+      if (r.novelty)       nov[r.novelty]       = (nov[r.novelty]       || 0) + 1
+      if (r.increaseScope) scope[r.increaseScope] = (scope[r.increaseScope] || 0) + 1
+    }
+    return { cat, unc, nov, scope }
+  }, [records])
+
   const tagCounts = useMemo(() => {
     const counts = {}
     for (const r of records) {
@@ -335,6 +347,11 @@ ${sample}`
       }
       r = r.filter(rec => allowed.has(rec.id))
     }
+    if (filterScope === '') {
+      r = r.filter(rec => !rec.increaseScope)
+    } else if (filterScope !== 'all') {
+      r = r.filter(rec => !rec.increaseScope || rec.increaseScope === filterScope)
+    }
     const { field, dir } = sort
     return [...r].sort((a, b) => {
       const av = a[field] ?? '', bv = b[field] ?? ''
@@ -346,7 +363,7 @@ ${sample}`
         ? String(av).localeCompare(String(bv))
         : String(bv).localeCompare(String(av))
     })
-  }, [records, q, matchMode, filterCat, filterUnc, filterNov, filterTags, filterConcepts, conceptMap, sort])
+  }, [records, q, matchMode, filterCat, filterUnc, filterNov, filterTags, filterConcepts, conceptMap, filterScope, sort])
 
   // ── Group lookup maps ──────────────────────────────────────────────────────
 
@@ -611,10 +628,10 @@ ${sample}`
 
         {/* Sidebar */}
         <aside className="w-44 shrink-0 border-r border-gray-800 p-3 flex flex-col gap-3 overflow-y-auto bg-gray-900">
-          <FilterSelect label="Category"    value={filterCat} onChange={setFilterCat} options={categories}/>
+          <FilterSelect label="Category"    value={filterCat} onChange={setFilterCat} options={categories} counts={filterCounts.cat}/>
           <FilterSelect label="Uncertainty" value={filterUnc} onChange={setFilterUnc}
-            options={['low','medium','high']}/>
-          <FilterSelect label="Novelty"     value={filterNov} onChange={setFilterNov} options={novelties}/>
+            options={['low','medium','high']} counts={filterCounts.unc}/>
+          <FilterSelect label="Novelty"     value={filterNov} onChange={setFilterNov} options={novelties} counts={filterCounts.nov}/>
           <div>
             <label className="block text-[10px] text-gray-500 uppercase tracking-wide mb-1">Sort</label>
             <select value={sort.field}
@@ -632,7 +649,7 @@ ${sample}`
             </select>
           </div>
           <button
-            onClick={() => { setFilterCat(''); setFilterUnc(''); setFilterNov(''); setQ(''); setFilterTags(new Set()) }}
+            onClick={() => { setFilterCat(''); setFilterUnc(''); setFilterNov(''); setQ(''); setFilterTags(new Set()); setFilterScope('') }}
             className="text-xs text-gray-600 hover:text-gray-400 text-left">
             Clear filters
           </button>
@@ -648,6 +665,20 @@ ${sample}`
             </div>
             <div className="mt-1 text-[9px] text-gray-600 leading-tight">
               v{APP_VERSION} · {BUILD_TIME}
+            </div>
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 uppercase tracking-wide mb-1">Increase Scope</label>
+            <select value={filterScope} onChange={e => setFilterScope(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">
+              <option value="">None</option>
+              {['News','Tutorials','Launches','Analysis','Ecosystem','Duplicates','Blueprints','Curated'].map(s => (
+                <option key={s} value={s}>{s}{filterCounts.scope[s] ? ` (${filterCounts.scope[s]})` : ''}</option>
+              ))}
+              <option value="all">All</option>
+            </select>
+            <div className="mt-1 text-[10px] text-gray-500 text-right">
+              {filtered.length} record{filtered.length !== 1 ? 's' : ''}
             </div>
           </div>
           {canWrite && (
@@ -1026,14 +1057,16 @@ function Th({ label, field, sort, toggle, cls = '' }) {
   )
 }
 
-function FilterSelect({ label, value, onChange, options }) {
+function FilterSelect({ label, value, onChange, options, counts }) {
   return (
     <div>
       <label className="block text-[10px] text-gray-500 uppercase tracking-wide mb-1">{label}</label>
       <select value={value} onChange={e => onChange(e.target.value)}
         className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">
         <option value="">All</option>
-        {options.map(o => <option key={o}>{o}</option>)}
+        {options.map(o => (
+          <option key={o} value={o}>{o}{counts?.[o] ? ` (${counts[o]})` : ''}</option>
+        ))}
       </select>
     </div>
   )
