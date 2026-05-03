@@ -26,12 +26,15 @@ Read `$OPENCLAW_SCHEDULED_DIR/pending_records_*.json` (most recent file) and `$O
 Freshness policy for search and selection:
 - Strongly prefer items whose original post/article date is within the last 7 days relative to the run date.
 - If you cannot find enough high-quality items from the last 7 days, expand to the last 30 days.
-- For a normal batch of roughly 10 selected items, aim for at least 2–3 items from the last 7 days whenever the search results make that possible.
+- Review candidates newest-first whenever source dates can be determined.
+- For a normal batch of roughly 10 selected items, require at least 2 items from the last 7 days whenever the search results make that possible; aim for 2–3.
+- If you do not yet have 2 last-7-day items, keep searching before finalizing unless you have genuinely exhausted the available recent sources.
 - Only use older items when they are exceptionally strong and you still do not have enough recent qualifying results.
 - Any selected item older than 30 days must be treated as a fallback item and explicitly flagged as such in the final report.
 - When an older item is included, treat that as an exception and mention in the final report that it was chosen as a fallback due to insufficient recent supply.
 - If multiple candidates are similar in quality, always choose the more recent one.
 - Do not spend scarce slots on old posts just because they are new to this database; recency should win unless the older item is materially better.
+- Product Hunt should be treated as a supplementary source for freshness-sensitive runs, not a primary source for filling the recent-item quota.
 
 
 
@@ -235,7 +238,8 @@ Print a markdown summary table of all new records, tagged by revenue_signal and 
 
 Also include a short freshness summary:
 - how many selected records were from the last 7 days
-- whether the batch met the target of at least 2–3 last-7-day items when feasible
+- whether the batch met the requirement of at least 2 last-7-day items when feasible, and whether it reached the 2–3 target
 - how many selected records were from the last 30 days
 - how many were older fallback items
 - why any older fallback items were included
+- whether Product Hunt contributed any selected items and, if so, whether they were used only as supplementary/fallback inputs
