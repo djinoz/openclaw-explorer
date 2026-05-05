@@ -49,8 +49,11 @@ FIRESTORE_BASE = (
 ALLOWED_FIELDS = {
     "category", "sourceUser", "description", "refUrls", "tweetDate",
     "searchDate", "notes", "uncertainty", "novelty", "title",
-    "sourceUrl", "subcategory", "confidence", "tags",
+    "sourceUrl", "subcategory", "confidence", "tags", "increaseScope",
 }
+
+# Valid increaseScope labels (from tag_increase_scope.py CATEGORY_LABELS)
+INCREASE_SCOPE_LABELS = {"News", "Tutorials", "Launches", "Analysis", "Ecosystem", "Duplicates", "Blueprints", "Curated"}
 
 # Map snake_case variants (from external JSON sources) to canonical camelCase.
 FIELD_ALIASES: dict[str, str] = {
@@ -110,6 +113,11 @@ def normalize_record(record: dict):
             cleaned[key] = value if isinstance(value, list) else []
         elif key == "confidence":
             if not isinstance(value, (int, float, str)):
+                return None
+            cleaned[key] = value
+        elif key == "increaseScope":
+            if value not in INCREASE_SCOPE_LABELS:
+                log.warning(f"  Invalid increaseScope value '{value}' — valid: {sorted(INCREASE_SCOPE_LABELS)}")
                 return None
             cleaned[key] = value
         else:

@@ -142,6 +142,16 @@ Discard:
 
 - **Comparison / overview articles** that survey the agent landscape but do not themselves document any specific deployment (e.g. "OpenClaw vs Claude Cowork" roundups, "Top 10 use cases" listicles).
 
+**Three-part test for a core record** (no `increaseScope`): a qualifying use case must have ALL THREE of: (1) a named operator or author, (2) a named specific workflow, and (3) a documented outcome or result. If it only passes 1 or 2 of these, do not discard it — instead include it but tag it with `increaseScope` using the appropriate label below.
+
+**Include with `increaseScope`** for entries that have real signal but fail the three-part test:
+- `"Launches"` — GitHub repo, Show HN, or ProductHunt release where the tool exists but no operator is shown running it in production
+- `"Tutorials"` — capability or feature explanation written as a walkthrough; no specific named deployment documented
+- `"Blueprints"` — "how I'd build X" or prescriptive architecture guide; reads instructional rather than operational
+- `"News"` — coverage or commentary about the platform/ecosystem; not a deployment
+- `"Analysis"` — head-to-head comparison or benchmark (e.g. "I ran A vs B for 3 weeks") — real usage but the subject is the comparison, not a running deployment
+- `"Ecosystem"` — aggregate signals, cohort data, market sizing across many users/products
+
 
 
 Tag each qualifying result:
@@ -197,6 +207,14 @@ Date selection rules:
 
 ```
 
+For `increaseScope` entries, add the field (omit entirely for core records):
+
+```json
+
+  "increaseScope": "Launches|Tutorials|Blueprints|News|Analysis|Ecosystem"
+
+```
+
 
 
 Key mapping rules:
@@ -214,6 +232,7 @@ Key mapping rules:
 - `notes` = pack the sha256 id, revenue_signal, and deep_reasoning as a single string: `"id=<hash>; revenue_signal=True; deep_reasoning=False"`
 
 - Do NOT include top-level keys named `id`, `author`, `date`, `source_url`, `revenue_signal`, `deep_reasoning`, or `summary` — these will be rejected by ingest.py
+- `increaseScope` must be one of: `Launches`, `Tutorials`, `Blueprints`, `News`, `Analysis`, `Ecosystem` — any other value will be rejected by ingest.py
 
 
 
@@ -247,7 +266,7 @@ If egress to oauth2.googleapis.com is blocked (proxy error), leave the pending f
 
 
 
-Print a markdown summary table of all new records, tagged by revenue_signal and deep_reasoning. State: searches run, raw candidates reviewed, dupes skipped, new records written, Firestore status.
+Print a markdown summary table of all new records, tagged by revenue_signal, deep_reasoning, and increaseScope. State: searches run, raw candidates reviewed, dupes skipped, new records written (core vs increaseScope), Firestore status.
 
 Also include a short freshness summary:
 - how many selected records were from the last 7 days
