@@ -1325,6 +1325,16 @@ function EditPanel({ record, onSave, onCancel, categories = [] }) {
             <option>common</option>
           </select>
         </div>
+        <div>
+          <label className="block text-[10px] text-gray-500 uppercase tracking-wide mb-1">Increase Scope</label>
+          <select value={form.increaseScope ?? ''} onChange={e => set('increaseScope', e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">
+            <option value="">— none —</option>
+            {['News','Tutorials','Launches','Analysis','Ecosystem','Duplicates','Blueprints','Curated'].map(s => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </div>
       </div>
       <div className="flex gap-2 mt-4">
         <button onClick={() => onSave(form)}
