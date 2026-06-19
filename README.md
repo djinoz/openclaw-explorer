@@ -135,12 +135,13 @@ Set these environment variables (e.g. in a `.env` file that is also git-ignored)
 
 ### Shared scheduled runtime + MCP query server
 
-The `scheduled/` folder is now a **single shared runtime** for both:
+The `scheduled/` folder is now a **single shared runtime** for all three of these:
 
 - the existing scheduled ingest/similarity jobs
 - the local read-only Firestore MCP server
+- the `agent-usecases` CLI / last30days adapter
 
-That means both flows should use the same:
+That means all three flows should use the same:
 - virtualenv: `scheduled/.venv`
 - env file: `scheduled/.env`
 - credentials file: `scheduled/service_account.json` (or another path via `GOOGLE_APPLICATION_CREDENTIALS`)
@@ -174,12 +175,37 @@ cat pending_records_YYYY-MM-DD_HH.json | python ingest.py
 python find_similars.py
 ```
 
-The MCP server files are:
-- server file: `scheduled/mcp_server.py`
+The query surfaces are:
+- CLI entrypoint: `scheduled/agent_usecases_cli.py`
+- legacy CLI shim: `scheduled/openclaw_db_cli.py`
+- PATH wrapper: `bin/agent-usecases`
+- legacy PATH wrapper: `bin/openclaw-db`
+- global wrapper installed on this machine: `~/.local/bin/agent-usecases`
+- legacy global wrapper: `~/.local/bin/openclaw-db`
+- MCP server file: `scheduled/mcp_server.py`
 - shared Firestore client logic: `scheduled/firestore_client.py`
 - smoke test: `scheduled/test_openclaw_db_mcp.py`
 
-If you want to register it with OpenClaw MCP, configure a stdio server that runs the scheduled venv Python with `mcp_server.py` as the sole argument. Do not commit machine-specific absolute paths or local config exports.
+#### CLI examples
+
+```bash
+# raw Firestore-backed search
+agent-usecases search 'agent memory' --limit 5 --pretty
+
+# inspect one record
+agent-usecases get 42 --pretty
+
+# aggregate stats
+agent-usecases stats --pretty
+
+# emit normalized evidence items for downstream agent tools
+agent-usecases last30days-source 'agent memory' --limit 8 --pretty
+
+# run the MCP server over stdio
+agent-usecases mcp
+```
+
+If you want to register it with an MCP host (OpenClaw, Claude Code, Printing Press-style agent wrappers, etc.), configure a stdio server that runs `agent-usecases mcp`. The legacy `openclaw-db` shim still works for existing scripts. Do not commit machine-specific absolute paths or local config exports.
 
 The MCP server exposes:
 - `search_use_cases`
@@ -189,6 +215,24 @@ The MCP server exposes:
 - `get_groups`
 - `get_suggestion_queue`
 - `refresh_cache`
+
+#### last30days integration
+
+`last30days` now detects the agent-usecases source automatically when `agent-usecases` is on `PATH` (or when `AGENT_USECASES_CLI` points to the wrapper explicitly). The legacy `openclaw-db` binary name and `OPENCLAW_DB_CLI` env var still work as compatibility aliases.
+
+```bash
+last30days 'agent memory' --search=agent_usecases --emit=json
+# legacy alias still accepted:
+last30days 'agent memory' --search=openclaw --emit=json
+```
+
+The new source shells out to:
+
+```bash
+agent-usecases last30days-source '<topic>' --date-from YYYY-MM-DD --date-to YYYY-MM-DD
+```
+
+so the contract is machine-readable JSON and can be reused by other agent tooling as well.
 
 ### Running manually
 

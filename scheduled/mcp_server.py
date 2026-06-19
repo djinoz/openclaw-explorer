@@ -5,7 +5,7 @@ from mcp.server.fastmcp import FastMCP
 
 from firestore_client import FirestoreClient
 
-mcp = FastMCP('openclaw-db')
+mcp = FastMCP('agent-usecases')
 client = FirestoreClient()
 
 

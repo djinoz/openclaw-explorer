@@ -17,10 +17,14 @@ from google.oauth2 import service_account
 load_dotenv(Path(__file__).parent / '.env')
 
 FIRESTORE_PROJECT_ID = os.environ['FIRESTORE_PROJECT_ID']
-CREDENTIALS_FILE = os.environ.get(
+_RAW_CREDENTIALS_FILE = os.environ.get(
     'GOOGLE_APPLICATION_CREDENTIALS',
-    str(Path(__file__).parent / 'service_account.json'),
+    'service_account.json',
 )
+_RAW_CREDENTIALS_PATH = Path(_RAW_CREDENTIALS_FILE).expanduser()
+if not _RAW_CREDENTIALS_PATH.is_absolute():
+    _RAW_CREDENTIALS_PATH = (Path(__file__).parent / _RAW_CREDENTIALS_PATH).resolve()
+CREDENTIALS_FILE = str(_RAW_CREDENTIALS_PATH)
 FIRESTORE_BASE = (
     f'https://firestore.googleapis.com/v1/projects/{FIRESTORE_PROJECT_ID}'
     f'/databases/(default)/documents'
