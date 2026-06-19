@@ -1,0 +1,10 @@
+Import of OpenClaw cron job "OpenClaw Daily Collect".
+
+Read and follow the exact instructions in /Users/prismismmacstudio/projects/openclaw-explorer/scheduled/openclaw-daily-collect.txt.
+
+Use /Users/prismismmacstudio/projects/openclaw-explorer/scheduled as OPENCLAW_SCHEDULED_DIR. Save pending files there, update seen_ids.txt there, and ingest via:
+cd /Users/prismismmacstudio/projects/openclaw-explorer/scheduled && ./.venv/bin/python run_ingest_latest.py
+
+Do not use ~/.openclaw/workspace as the scheduled base.
+
+In your final report, include the freshness summary required by the prompt file.

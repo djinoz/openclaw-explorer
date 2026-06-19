@@ -21,98 +21,68 @@ Read `$OPENCLAW_SCHEDULED_DIR/pending_records_*.json` (most recent file) and `$O
 
 
 
-## Step 2 — Run all searches
+## Step 2 — Run a lean recency-first search pass
 
 Freshness policy for search and selection:
 - Strongly prefer items whose original post/article date is within the last 7 days relative to the run date.
 - If you cannot find enough high-quality items from the last 7 days, expand to the last 30 days.
 - Review candidates newest-first whenever source dates can be determined.
-- For a normal batch of roughly 10 selected items, require at least 2 items from the last 7 days whenever the search results make that possible; aim for 2–3.
-- If you do not yet have 2 last-7-day items, keep searching before finalizing unless you have genuinely exhausted the available recent sources.
+- Require at least 2 items from the last 7 days whenever the available recent search surface makes that feasible, but do not burn quota chasing the quota target once the lean search budget below is exhausted.
 - Only use older items when they are exceptionally strong and you still do not have enough recent qualifying results.
 - Any selected item older than 30 days must be treated as a fallback item and explicitly flagged as such in the final report.
-- When an older item is included, treat that as an exception and mention in the final report that it was chosen as a fallback due to insufficient recent supply.
 - If multiple candidates are similar in quality, always choose the more recent one.
-- Do not spend scarce slots on old posts just because they are new to this database; recency should win unless the older item is materially better.
-- Product Hunt should be treated as a supplementary source for freshness-sensitive runs, not a primary source for filling the recent-item quota.
+- Product Hunt should be treated as a last-resort supplementary source, not a default source.
 
+Quota discipline:
+- Default to direct non-Firecrawl fetches for public JSON/API endpoints using terminal (`curl` or small Python scripts) whenever possible.
+- Use Firecrawl-backed WebSearch only for pages/search surfaces that genuinely need it (especially X/Twitter and general web discovery).
+- Do not use Firecrawl-backed extraction on public JSON endpoints that can be fetched directly.
+- Hard cap the run at **8 total search/discovery actions** and **8 total detailed page fetches/reviews** unless a direct non-Firecrawl fetch is essentially free and obviously useful.
+- Stop early once you have 5–8 strong, non-duplicate candidate records that satisfy the quality bar.
+- Wait 2–3 seconds between network requests to avoid rate limiting, but do not add extra exploratory passes just because the run has time left.
 
+Run searches in this order and stop as soon as you have enough strong candidates:
 
-Use WebSearch for general and authenticated-wall sources (X, Reddit web). Use WebFetch for public JSON APIs (HN Algolia, Reddit JSON API, IndieHackers). Wait 3–5 seconds between requests to avoid rate limiting.
+### Priority A — cheap direct public sources first
 
+1. Hacker News Algolia direct fetch:
+   `https://hn.algolia.com/api/v1/search?query=openclaw&tags=story&hitsPerPage=12`
 
+2. Hacker News Algolia direct fetch:
+   `https://hn.algolia.com/api/v1/search?query=claude+agent+automation&tags=story&hitsPerPage=12`
 
-### HackerNews (WebSearch or direct Algolia API)
+3. Reddit JSON direct fetch:
+   `https://www.reddit.com/search.json?q=openclaw&sort=new&t=week&limit=12`
 
-1. WebSearch: `"openclaw" OR "hermes agent" site:news.ycombinator.com`
+4. Reddit JSON direct fetch:
+   `https://www.reddit.com/search.json?q=hermes+agent+claude&sort=new&t=week&limit=12`
 
-2. WebFetch: `https://hn.algolia.com/api/v1/search?query=openclaw&tags=story&hitsPerPage=20`
+If Reddit JSON returns a 429, redirect, or blocked response, do only one fallback search:
+- WebSearch: `site:reddit.com "openclaw" OR "hermes agent" after:2026-01-01`
 
-3. WebFetch: `https://hn.algolia.com/api/v1/search?query=claude+agent+automation&tags=story&hitsPerPage=20`
+### Priority B — high-signal Firecrawl-backed discovery
 
-Prefer newest results first from HN and deprioritize old threads unless they are uniquely strong.
+5. WebSearch: `openclaw site:x.com OR site:twitter.com`
 
+6. WebSearch: `"hermes agent" claude site:x.com OR site:twitter.com`
 
+7. WebSearch: `"openclaw" real-world workflow OR automation`
 
-### Reddit (public JSON API via WebFetch — no login required)
+8. WebSearch: `"hermes" agent workflow 2026`
 
-Prefer `sort=new` results and treat older/high-engagement threads as fallback rather than primary targets.
+### Optional fallback only if still short after the 8-step budget above
 
-4. WebFetch: `https://www.reddit.com/search.json?q=openclaw&sort=new&t=week&limit=25`
+Use at most **one** of the following fallback actions, not all of them:
+- WebSearch: `site:indiehackers.com "openclaw" OR "claude agent"`
+- direct fetch: `https://www.indiehackers.com/search?query=openclaw`
+- WebSearch: `"claude cowork" use case -site:anthropic.com`
+- WebSearch: `"openclaw" OR "claude agent" "$" OR revenue site:producthunt.com`
 
-5. WebFetch: `https://www.reddit.com/search.json?q=hermes+agent+claude&sort=new&t=week&limit=25`
-
-6. WebFetch: `https://www.reddit.com/r/ClaudeAI/search.json?q=claude+agent+use+case&sort=new&restrict_sr=1&limit=25`
-
-7. WebFetch: `https://www.reddit.com/r/LocalLLaMA/search.json?q=claude+agent+revenue&sort=new&restrict_sr=1&limit=25`
-
-Note: The Reddit JSON API is public and does not require a logged-in session. If a fetch returns a 429 or redirect, fall back to:
-  WebSearch: `site:reddit.com "openclaw" OR "hermes agent" after:2026-01-01`
-
-
-
-### X / Twitter (WebSearch — no authenticated browser available)
-
-Bias toward recent posts from the last few days. If the search surface mixes in older evergreen posts, skip them unless they are clearly stronger than newer candidates.
-
-8. WebSearch: `openclaw site:x.com OR site:twitter.com`
-
-9. WebSearch: `"hermes agent" claude site:x.com OR site:twitter.com`
-
-10. WebSearch: `"claude cowork" site:x.com OR site:twitter.com`
-
-11. WebSearch: `openclaw revenue OR "$" site:x.com OR site:twitter.com`
-
-12. WebSearch: `openclaw "24/7" OR background OR overnight site:x.com OR site:twitter.com`
-
-13. WebSearch: `"claude agent" "multi-agent" OR orchestrat site:x.com OR site:twitter.com`
-
-
-
-### IndieHackers (WebFetch public pages)
-
-14. WebFetch: `https://www.indiehackers.com/search?query=openclaw`
-
-15. WebFetch: `https://www.indiehackers.com/search?query=claude+agent+revenue`
-
-If IndieHackers returns a JS-rendered blank, fall back to:
-  WebSearch: `site:indiehackers.com "openclaw" OR "claude agent"`
-
-
-
-### General web (WebSearch)
-
-When choosing among general-web hits, prefer recent publication dates and avoid filling the batch with older historical examples unless the recent search pool is thin.
-
-16. WebSearch: `"openclaw" real-world workflow OR automation`
-
-17. WebSearch: `"hermes" agent workflow 2026`
-
-18. WebSearch: `"claude cowork" use case -site:anthropic.com`
-
-19. WebSearch: `"openclaw" OR "claude agent" "$" OR revenue site:producthunt.com`
-
-
+Detailed-review budget:
+- After discovery, inspect only the best 5–8 candidate URLs/pages.
+- Prefer direct fetches (`curl`, JSON/API, GitHub raw/content fetches) over Firecrawl extraction when the page is public and fetchable without JS execution.
+- Do not scrape broad batches of 5 URLs repeatedly; review shortlisted candidates individually.
+- Skip weak launch cards, listicles, and obvious duplicates without detailed extraction.
 
 ## Step 3 — Filter and score
 
@@ -147,10 +117,15 @@ Discard:
 **Include with `increaseScope`** for entries that have real signal but fail the three-part test:
 - `"Launches"` — GitHub repo, Show HN, or ProductHunt release where the tool exists but no operator is shown running it in production
 - `"Tutorials"` — capability or feature explanation written as a walkthrough; no specific named deployment documented
-- `"Blueprints"` — "how I'd build X" or prescriptive architecture guide; reads instructional rather than operational
+- `"Blueprints"` — not just "how I'd build X", but also architecture / stack / recipe / setup-showcase posts where a real deployment exists yet the post is mainly presenting the system design or operating pattern rather than one clearly bounded workflow with its own outcome. If a post reads like "here is our stack", "here is our recipe", "here are the cron jobs we run", or a deployment tour, prefer `Blueprints` unless it also centers one specific workflow/result strongly enough to pass the core three-part test.
 - `"News"` — coverage or commentary about the platform/ecosystem; not a deployment
 - `"Analysis"` — head-to-head comparison or benchmark (e.g. "I ran A vs B for 3 weeks") — real usage but the subject is the comparison, not a running deployment
 - `"Ecosystem"` — aggregate signals, cohort data, market sizing across many users/products
+
+Additional scope guidance:
+- Subreddit / forum flair like `Use Case` is weak evidence only. Do not let forum flair override the content-based scope rules.
+- A post can still be `core` even if the title is casual or discussion-framed, as long as the body clearly identifies a named operator, one specific autonomous workflow, and a concrete result/outcome.
+- When a real deployment is described but the post mostly inventories several automations, channels, or architectural components rather than focusing on one workflow, default to `Blueprints` instead of `core`.
 
 
 
