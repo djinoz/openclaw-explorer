@@ -24,12 +24,15 @@ firebase-debug.log
 firestore-debug.log
 ui-debug.log
 
-# Scheduled task credentials
+# Scheduled task credentials and runtime artifacts
 scheduled/.env
 scheduled/service_account.json
 scheduled/*.json
+scheduled/*.xml
 scheduled/seen_ids.txt
 scheduled/build_ingest_batch.py
+scheduled/reviewed/
+scheduled/reviewed2/
 
 # Python
 __pycache__/

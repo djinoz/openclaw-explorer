@@ -171,9 +171,15 @@ Legacy scheduled jobs still run from this same environment, for example:
 ```bash
 cd scheduled
 source .venv/bin/activate
-cat pending_records_YYYY-MM-DD_HH.json | python ingest.py
+# new collection runs should write minute-stamped batches in OPENCLAW_SCHEDULED_DIR
+./.venv/bin/python run_ingest_latest.py
+
+# equivalent manual path if you want to ingest a specific batch file directly:
+cat "$OPENCLAW_SCHEDULED_DIR"/pending_records_YYYY-MM-DD_HHMM.json | python ingest.py
 python find_similars.py
 ```
+
+`run_ingest_latest.py` is the runtime-friendly entrypoint: it resolves the scheduled base from `OPENCLAW_SCHEDULED_DIR`, picks the newest `pending_records_*.json`, and ingests that file. The minute-level `pending_records_YYYY-MM-DD_HHMM.json` naming is current collection policy to avoid collisions; the runtime still accepts older `pending_records_*.json` artifacts.
 
 The query surfaces are:
 - CLI entrypoint: `scheduled/agent_usecases_cli.py`

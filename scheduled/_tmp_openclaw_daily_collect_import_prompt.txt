@@ -7,4 +7,6 @@ cd /Users/prismismmacstudio/projects/openclaw-explorer/scheduled && ./.venv/bin/
 
 Do not use ~/.openclaw/workspace as the scheduled base.
 
+Runtime note: `run_ingest_latest.py` ingests the newest `pending_records_*.json` in `OPENCLAW_SCHEDULED_DIR`; it does not require one exact timestamp suffix. Policy note: new collection runs should still write `pending_records_YYYY-MM-DD_HHMM.json` files to avoid same-hour collisions.
+
 In your final report, include the freshness summary required by the prompt file.

@@ -25,6 +25,7 @@ import sys
 import json
 import datetime
 import logging
+import time
 from pathlib import Path
 
 import requests
@@ -68,6 +69,10 @@ FIELD_ALIASES: dict[str, str] = {
 # Hard cap on records per ingest run — prevents a malicious or oversized
 # payload from bulk-writing the collection.
 MAX_BATCH = 100
+REQUEST_TIMEOUT = 60
+READ_RETRY_ATTEMPTS = 3
+READ_RETRY_DELAY_SECONDS = 2
+WRITE_RETRY_DELAY_SECONDS = 2
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -125,33 +130,69 @@ def normalize_record(record: dict):
     return cleaned
 
 
+def is_transient_request_error(exc: requests.exceptions.RequestException) -> bool:
+    if isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
+        return exc.response.status_code in {408, 429, 500, 502, 503, 504}
+    return False
+
+
+def run_read_with_retry(operation_name: str, callback):
+    last_exc = None
+    for attempt in range(1, READ_RETRY_ATTEMPTS + 1):
+        try:
+            return callback()
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            if not is_transient_request_error(exc) or attempt == READ_RETRY_ATTEMPTS:
+                raise
+            log.warning(
+                "%s transient failure (%s/%s): %s — retrying in %ss",
+                operation_name,
+                attempt,
+                READ_RETRY_ATTEMPTS,
+                exc,
+                READ_RETRY_DELAY_SECONDS,
+            )
+            time.sleep(READ_RETRY_DELAY_SECONDS)
+
+    raise last_exc  # pragma: no cover
+
+
 def url_exists(token, ref_url: str) -> bool:
-    resp = requests.post(
-        f"{FIRESTORE_BASE}:runQuery",
-        headers=headers(token),
-        json={"structuredQuery": {
-            "from": [{"collectionId": COLLECTION}],
-            "where": {"fieldFilter": {
-                "field": {"fieldPath": "refUrls"},
-                "op": "EQUAL",
-                "value": {"stringValue": ref_url},
+    def do_query():
+        resp = requests.post(
+            f"{FIRESTORE_BASE}:runQuery",
+            headers=headers(token),
+            json={"structuredQuery": {
+                "from": [{"collectionId": COLLECTION}],
+                "where": {"fieldFilter": {
+                    "field": {"fieldPath": "refUrls"},
+                    "op": "EQUAL",
+                    "value": {"stringValue": ref_url},
+                }},
+                "limit": 1,
             }},
-            "limit": 1,
-        }},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return any("document" in r for r in resp.json())
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return any("document" in r for r in resp.json())
+
+    return run_read_with_retry(f"duplicate check for {ref_url}", do_query)
 
 
 def write_record(token, record: dict) -> str:
     def fv(v):
-        if isinstance(v, str):   return {"stringValue": v}
-        if isinstance(v, (int, float)): return {"doubleValue": float(v)}
-        if isinstance(v, list):  return {"arrayValue": {"values": [fv(i) for i in v]}}
+        if isinstance(v, str):
+            return {"stringValue": v}
+        if isinstance(v, (int, float)):
+            return {"doubleValue": float(v)}
+        if isinstance(v, list):
+            return {"arrayValue": {"values": [fv(i) for i in v]}}
         return {"nullValue": None}
 
-    now = datetime.datetime.utcnow().isoformat() + "Z"
+    now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
     fields = {k: fv(v) for k, v in record.items()}
     fields["createdAt"] = {"timestampValue": now}
     fields["updatedAt"] = {"timestampValue": now}
@@ -160,10 +201,41 @@ def write_record(token, record: dict) -> str:
         f"{FIRESTORE_BASE}/{COLLECTION}",
         headers=headers(token),
         json={"fields": fields},
-        timeout=30,
+        timeout=REQUEST_TIMEOUT,
     )
     resp.raise_for_status()
     return resp.json().get("name", "").split("/")[-1]
+
+
+def verify_or_retry_ambiguous_write(token, record: dict, ref_url: str, description: str) -> str:
+    short_desc = description[:60]
+    log.warning(
+        "  WRITE TRANSIENT FAILURE  %s  — rechecking Firestore before retry",
+        short_desc,
+    )
+
+    if url_exists(token, ref_url):
+        log.info("  NEW? recovered via existence check  %s", short_desc)
+        return ""
+
+    log.warning(
+        "  WRITE AMBIGUOUS/ABSENT  %s  — sleeping %ss before one final retry",
+        short_desc,
+        WRITE_RETRY_DELAY_SECONDS,
+    )
+    time.sleep(WRITE_RETRY_DELAY_SECONDS)
+
+    try:
+        return write_record(token, record)
+    except requests.exceptions.RequestException as exc:
+        if not is_transient_request_error(exc):
+            raise
+        if url_exists(token, ref_url):
+            log.info("  NEW? recovered after retry via existence check  %s", short_desc)
+            return ""
+        raise RuntimeError(
+            f"Ambiguous Firestore write for {short_desc!r}: transient failures persisted and no duplicate was observable after retry"
+        ) from exc
 
 
 def main():
@@ -220,8 +292,19 @@ def main():
             skipped += 1
             continue
 
-        doc_id = write_record(token, clean)
-        log.info(f"  NEW  {clean.get('description','')[:60]}  → {doc_id}")
+        description = clean.get("description", "")
+        try:
+            doc_id = write_record(token, clean)
+            log.info(f"  NEW  {description[:60]}  → {doc_id}")
+            inserted += 1
+            continue
+        except requests.exceptions.RequestException as exc:
+            if not is_transient_request_error(exc):
+                raise
+
+        doc_id = verify_or_retry_ambiguous_write(token, clean, url, description)
+        if doc_id:
+            log.info(f"  NEW  {description[:60]}  → {doc_id} (after retry)")
         inserted += 1
 
     log.info(f"Done. inserted={inserted} dupes={skipped} invalid={invalid}")

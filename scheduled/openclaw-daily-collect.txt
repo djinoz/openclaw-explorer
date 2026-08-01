@@ -7,6 +7,11 @@ Freshness matters. Prefer genuinely recent findings first, and only fall back to
 
 The working directory for this job is defined by the environment variable $OPENCLAW_SCHEDULED_DIR. All file reads and writes below use that path as the base.
 
+Runtime vs policy notes:
+- Runtime-enforced behavior: `OPENCLAW_SCHEDULED_DIR` sets the scheduled base directory, and the local ingest wrapper/runtime operate on the most recent `pending_records_*.json` found there rather than requiring one exact timestamp format.
+- Prompt policy (not code-enforced): the search order, Reddit fallback ladder, Firecrawl budget/handling rules, freshness targets, and reporting expectations below are operator instructions that the agent must follow explicitly.
+- Naming policy for new batches: write new pending artifacts as `pending_records_YYYY-MM-DD_HHMM.json` so manual reruns and sibling runs in the same hour do not collide, even though the runtime will still read older `pending_records_*.json` files.
+
 
 
 **Product terms to search for:** "openclaw" OR "hermes" (the AI agent) OR "claude cowork" OR "claude agent" — use all of these interchangeably across platforms.
@@ -37,6 +42,8 @@ Quota discipline:
 - Default to direct non-Firecrawl fetches for public JSON/API endpoints using terminal (`curl` or small Python scripts) whenever possible.
 - Use Firecrawl-backed WebSearch only for pages/search surfaces that genuinely need it (especially X/Twitter and general web discovery).
 - Do not use Firecrawl-backed extraction on public JSON endpoints that can be fetched directly.
+- Never send HN Algolia API URLs, Reddit JSON URLs, or Reddit RSS URLs through `web_extract` / Firecrawl just because they are URLs. Fetch them directly in terminal first, parse locally, and only send shortlisted human-readable page URLs to later review.
+- If Firecrawl-backed `web_search` returns a payment / credits / quota failure once, treat Firecrawl as unavailable for the rest of the run. Do **not** keep retrying `web_search`; reallocate the remaining discovery budget to direct GitHub/API/HTML searches instead.
 - Hard cap the run at **8 total search/discovery actions** and **8 total detailed page fetches/reviews** unless a direct non-Firecrawl fetch is essentially free and obviously useful.
 - Stop early once you have 5–8 strong, non-duplicate candidate records that satisfy the quality bar.
 - Wait 2–3 seconds between network requests to avoid rate limiting, but do not add extra exploratory passes just because the run has time left.
@@ -47,28 +54,59 @@ Run searches in this order and stop as soon as you have enough strong candidates
 
 1. Hacker News Algolia direct fetch:
    `https://hn.algolia.com/api/v1/search?query=openclaw&tags=story&hitsPerPage=12`
+   - Fetch this with terminal (`python3` or `curl`) and inspect the JSON locally.
+   - Do **not** pass this API URL to `web_extract`.
+   - Shortlist only promising `url` / item links from the returned hits for later detailed review.
 
 2. Hacker News Algolia direct fetch:
    `https://hn.algolia.com/api/v1/search?query=claude+agent+automation&tags=story&hitsPerPage=12`
+   - Same handling as above: direct terminal fetch, local JSON review, no Firecrawl on the Algolia endpoint itself.
 
-3. Reddit JSON direct fetch:
-   `https://www.reddit.com/search.json?q=openclaw&sort=new&t=week&limit=12`
+3. Reddit official API search (preferred when credentials are available):
+   - If `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_REFRESH_TOKEN`, and `REDDIT_USER_AGENT` are present in the environment, obtain an OAuth access token and query Reddit directly via terminal.
+   - Preferred query shape: `https://oauth.reddit.com/search?q=openclaw&sort=new&t=week&limit=12&type=link`
 
-4. Reddit JSON direct fetch:
-   `https://www.reddit.com/search.json?q=hermes+agent+claude&sort=new&t=week&limit=12`
+4. Reddit official API search (second query, same OAuth path):
+   - `https://oauth.reddit.com/search?q=hermes+agent+claude&sort=new&t=week&limit=12&type=link`
 
-If Reddit JSON returns a 429, redirect, or blocked response, do only one fallback search:
-- WebSearch: `site:reddit.com "openclaw" OR "hermes agent" after:2026-01-01`
+If Reddit OAuth credentials are **not** available, or the token/search call fails, use this fallback ladder and stop at the first usable layer:
+- Fallback A: Reddit RSS direct fetch via terminal — `https://www.reddit.com/search.rss?q=openclaw&sort=new&t=week`
+- Fallback B: Reddit RSS direct fetch via terminal — `https://www.reddit.com/search.rss?q=hermes+agent+claude&sort=new&t=week`
+- Fallback C: one cheap WebSearch only — `site:reddit.com "openclaw" OR "hermes agent" after:2026-01-01`
 
-### Priority B — high-signal Firecrawl-backed discovery
+Notes for Reddit handling:
+- Before Reddit discovery, fetch `https://api.ipify.org` once and log the public IP for the run.
+- On this machine, the known non-VPN baseline IP is `220.233.28.1`. If the current IP matches that baseline, or Reddit RSS/HTML requests fail with SSL EOF / 403 blocked / connection resets, treat Reddit as a network/VPN-path issue rather than a query issue.
+- In that case, stop retrying Reddit for the rest of the run after one failed RSS layer and move on to GitHub/HN sources.
+- Do **not** rely on anonymous `www.reddit.com/search.json` as the primary path on this machine; treat it as unreliable/blocked unless a run proves otherwise.
+- Do **not** send Reddit JSON or RSS endpoints through `web_extract` / Firecrawl. Fetch directly in terminal, parse locally, and only review shortlisted Reddit post URLs afterward.
+- In the final report, state which Reddit layer was used: `oauth`, `rss`, `websearch-fallback`, or `skipped-network`.
 
-5. WebSearch: `openclaw site:x.com OR site:twitter.com`
+### Priority B — direct GitHub discovery before Firecrawl
 
-6. WebSearch: `"hermes agent" claude site:x.com OR site:twitter.com`
+5. GitHub repository search via direct API fetch:
+   - Query for `openclaw` in repository name/description/readme, sorted by recent update.
+   - Example shape: `https://api.github.com/search/repositories?q=openclaw+in:name,description,readme+pushed:>=<recent-date>&sort=updated&order=desc&per_page=10`
 
-7. WebSearch: `"openclaw" real-world workflow OR automation`
+6. GitHub repository search via direct API fetch:
+   - Query for `"hermes agent"` OR `"claude agent"` with workflow / cron / automation terms in repository name/description/readme.
+   - Prefer results updated in the last 30 days.
 
-8. WebSearch: `"hermes" agent workflow 2026`
+7. GitHub issues / discussions search via direct API or public HTML fetch:
+   - Query for `openclaw` or `"hermes agent"` in issue bodies/titles to find real workflow evidence, operator reports, and proof artifacts.
+   - Prefer issue threads showing completion timestamps, logs, or output links.
+
+8. GitHub code / docs fetch for shortlisted repos/issues:
+   - For the best repository candidates, directly inspect `README`, docs, issue threads, cron configs, or workflow files before adding a record.
+   - This still counts against the detailed-review budget; do not spray-fetch every repo.
+
+### Priority C — Firecrawl-backed discovery only when available
+
+If you still need more candidates and Firecrawl is available, use at most the remaining search budget on:
+- WebSearch: `openclaw site:x.com OR site:twitter.com`
+- WebSearch: `"hermes agent" claude site:x.com OR site:twitter.com`
+- WebSearch: `"openclaw" real-world workflow OR automation`
+- WebSearch: `"hermes" agent workflow 2026`
 
 ### Optional fallback only if still short after the 8-step budget above
 
@@ -215,7 +253,7 @@ Key mapping rules:
 
 
 
-Save the array of records to `$OPENCLAW_SCHEDULED_DIR/pending_records_YYYY-MM-DD_HH.json` (include hour to avoid overwriting sibling runs).
+Save the array of records to `$OPENCLAW_SCHEDULED_DIR/pending_records_YYYY-MM-DD_HHMM.json` (include hour+minute to avoid overwriting sibling or manual reruns in the same hour).
 
 
 
@@ -227,7 +265,7 @@ Then run:
 
 ```
 
-cd $OPENCLAW_SCHEDULED_DIR && cat pending_records_YYYY-MM-DD_HH.json | python3 ingest.py
+cd $OPENCLAW_SCHEDULED_DIR && cat pending_records_YYYY-MM-DD_HHMM.json | python3 ingest.py
 
 ```
 
@@ -241,12 +279,20 @@ If egress to oauth2.googleapis.com is blocked (proxy error), leave the pending f
 
 
 
-Print a markdown summary table of all new records, tagged by revenue_signal, deep_reasoning, and increaseScope. State: searches run, raw candidates reviewed, dupes skipped, new records written (core vs increaseScope), Firestore status.
+For Telegram delivery, keep the final message brief.
 
-Also include a short freshness summary:
-- how many selected records were from the last 7 days
-- whether the batch met the requirement of at least 2 last-7-day items when feasible, and whether it reached the 2–3 target
-- how many selected records were from the last 30 days
-- how many were older fallback items
-- why any older fallback items were included
-- whether Product Hunt contributed any selected items and, if so, whether they were used only as supplementary/fallback inputs
+Output only one section titled `## Ingest Output`.
+Do **not** include the batch-summary table, operational-stats section, freshness-summary section, or source/path-notes section in the delivered Telegram message.
+
+Under `## Ingest Output`, provide:
+- a one-line ingest summary: received count, inserted count, dupes count, invalid count
+- one bullet per inserted record only
+- for each inserted record include:
+  - name / source
+  - category
+  - novelty (`low|medium|high`)
+  - revenue potential (`yes|no` based on `revenue_signal`)
+  - scope (`core` or the `increaseScope` label)
+  - Firestore document id if available
+
+If nothing new was inserted, `## Ingest Output` should say so in one sentence and still include the ingest counts.
